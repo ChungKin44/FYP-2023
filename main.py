@@ -1,15 +1,14 @@
+# Preprocess
 import os
 import cv2
 import xml.etree.ElementTree as ET
+import csv
 from pathlib import Path
 import glob
-import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 from keras.preprocessing.image import img_to_array, array_to_img
-
-root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/train"
 
 # Machine Learning
 import torch
@@ -17,8 +16,9 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
+root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/test"
 
-def convert_label(lab):
+"""def convert_label(lab): #convert label string to number
     re = []
     for string in lab:
         result = []
@@ -32,18 +32,11 @@ def convert_label(lab):
                 result.append(2)
         if len(result) == length:
             re.append(result)
-    return re
+    return re """
 
 
-def normalize(img_numpy_array):
+def normalize(img_numpy_array):  # gray scale
     return img_numpy_array / 255.0
-
-
-def standardization(imagelist_np, BBoxes_np):
-    X_train_mean = np.mean(imagelist_np, axis=0)
-    X_train = imagelist_np - X_train_mean
-    y_train = np.array(BBoxes_np)
-    return X_train, y_train
 
 
 def parse_xml(xml_path):
@@ -68,12 +61,25 @@ def parse_xml(xml_path):
     return bounding_boxes, labels, width, height
 
 
-import os
-import glob
-import csv
-import xml.etree.ElementTree as ET
+def write_folder_names_to_text(folder_path, output_file):
+    # Get the list of file names in the folder
+    file_names = os.listdir(folder_path)
 
-def xml_to_csv(root_dir):
+    # Create or overwrite the output file
+    with open(output_file, 'w') as f:
+        # Write each file name to a new line in the text file
+        for file_name in file_names:
+            if file_name.endswith('.jpg'):
+                f.write(file_name + '\n')
+
+    print(f"File names written to {output_file} successfully.")
+
+
+folder_path = "C:/Users/willi/OneDrive/桌面/Dataset/test"
+output_file = "C:/Users/willi/OneDrive/桌面/Dataset/test/file_names.txt"
+write_folder_names_to_text(folder_path, output_file)
+
+""" def xml_to_csv(root_dir):
     bbox = []
     labels = []
     for xml_file in glob.glob(root_dir + '/*.xml'):
@@ -91,62 +97,67 @@ def xml_to_csv(root_dir):
         writer.writerow(['filename', 'width', 'height', 'label', 'xmin', 'ymin', 'xmax', 'ymax'])
 
         for i in range(len(bbox)):
-           for j in range(len(bbox[i])):
-                writer.writerow([os.path.basename(xml_file), width, height, labels[i][j],bbox[i][j][0],bbox[i][j][1],bbox[i][j][2],bbox[i][j][3]])
+            for j in range(len(bbox[i])):
+                writer.writerow([os.path.basename(xml_file), width, height, labels[i][j], bbox[i][j][0], bbox[i][j][1],
+                                 bbox[i][j][2], bbox[i][j][3]])
 
-    print(f"CSV file saved at: {csv_file}")
+    print(f"CSV file saved at: {csv_file}")  """
 
-
-
-xml_to_csv(root_dir)
-
-
+voc_label = {'leaf,stem,soil'}
+dict_labels = dict(zip(voc_label, range(len(voc_label))))
 
 
+class read_voc(Dataset):
+    def __init__(self, root_path):
+        super(read_voc).__init__()
+        self.root_path = root_path
+        self.img_idx = []
+        self.anno_idx = []
+        self.bbox = []
+        self.obj_name = []
+        train_txt_path = self.root_path + "/file_names.txt"
+        print(train_txt_path)
+        self.img_path = self.root_path + "/*.rf.*.jpg"
+        self.csv_path = self.root_path + "/annotations.csv"
+        self.anno_path = self.root_path + "/*.rf.*.xml"
 
+        train_txt = open(train_txt_path)
+        lines = train_txt.readlines()
+        for l in lines:
+            name = lines.strip().split()[0]
+            self.img_idx.append(self.img_path + name + '.jpg')
+            self.ano_idx.append(self.ano_path + name + '.xml')
+
+
+def __getitem__(self, item):
+    img = cv2.imread(self.img_idx[item])
+    height, width, channels = img.shape
+    print(img)
+    targets = ET.parse(self.ano_idx[item])
+    res = []  # 存储标注信息 即边框左上角和右下角的四个点的坐标信息和目标的类别标签
+    for xml_file in glob.glob(root_dir + '/*.xml'):
+        if os.path.exists(xml_file):
+            bboxes, labels, width, height = parse_xml(xml_file)
+            res.append(bboxes)
+            res.append(labels)
+
+    return img, res
+
+
+def __length__(self):
+    data_length = len(self.img_idx)
+    return data_length
+
+
+def main():
+    #  开始调用 Read_data类读取数据，并使用Dataloader生成迭代数据为送入模型中做准备
+    train_data = read_voc(root_path=root_dir)  # variable for dataset
+    train_loader = DataLoader(train_data, batch_size=5, shuffle=False)
+    img, res = train_loader
+    print(img, res)
 
 
 """
-# check quantity of image and labels
-print("Total Read Image and label = ", image_count, label_count)
-# Print image shapes and bounding boxes
-img_shape = num_imagelist[0].shape
-print(f'Image {0 + 1} shape: {img_shape}')
-print(f'Bounding boxes for image {0 + 1} shape: {bboxes.shape}')
-print(len(Label))
-print(len(BBoxes))
-print(len(num_imagelist))
-
-
-# Labeled visualize
-def make_mask(image_dir, save_dir):
-    data = os.listdir(image_dir)
-    temp_data = []
-    for i in data:
-        if i.split('.')[1] == 'json':
-            temp_data.append(i)
-        else:
-            continue
-    for js in temp_data:
-        json_data = json.load(open(os.path.join(image_dir, js), 'r'))
-        shapes_ = json_data['shapes']
-        mask = Image.new('P', Image.open(os.path.join(image_dir, js.replace('json', 'png'))).size)
-        for shape_ in shapes_:
-            label = shape_['label']
-            points = shape_['points']
-            points = tuple(tuple(i) for i in points)
-            mask_draw = ImageDraw.Draw(mask)
-            mask_draw.polygon(points, fill=CLASS_NAMES.index(label) + 1)
-        mask.save(os.path.join(save_dir, js.replace('json', 'png')))
-
-
-def vis_label(img):
-    img = Image.open(img)
-    img = np.array(img)
-    print(set(img.reshape(-1).tolist()))
-
-
-
 # Network of CNN
 
 class Network(nn.Module):
