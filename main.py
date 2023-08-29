@@ -16,23 +16,17 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
-root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/test"
 
-"""def convert_label(lab): #convert label string to number
-    re = []
-    for string in lab:
-        result = []
-        length = len(string)
-        for str in string:
-            if str == 'leaf':
-                result.append(0)
-            elif str == 'stem':
-                result.append(1)
-            elif str == 'soil':
-                result.append(2)
-        if len(result) == length:
-            re.append(result)
-    return re """
+def convert_label(lab):
+    result = []
+    for str in lab:
+        if str == 'leaf':
+            result.append(0)
+        elif str == 'stem':
+            result.append(1)
+        elif str == 'soil':
+            result.append(2)
+    return result
 
 
 def normalize(img_numpy_array):  # gray scale
@@ -61,7 +55,7 @@ def parse_xml(xml_path):
     return bounding_boxes, labels, width, height
 
 
-def write_folder_names_to_text(folder_path, output_file):
+""" def write_folder_names_to_text(folder_path, output_file):   #list all name of jpg into txt 
     # Get the list of file names in the folder
     file_names = os.listdir(folder_path)
 
@@ -77,9 +71,9 @@ def write_folder_names_to_text(folder_path, output_file):
 
 folder_path = "C:/Users/willi/OneDrive/桌面/Dataset/test"
 output_file = "C:/Users/willi/OneDrive/桌面/Dataset/test/file_names.txt"
-write_folder_names_to_text(folder_path, output_file)
+write_folder_names_to_text(folder_path, output_file) """
 
-""" def xml_to_csv(root_dir):
+""" def xml_to_csv(root_dir):                      #XML to CSV format 
     bbox = []
     labels = []
     for xml_file in glob.glob(root_dir + '/*.xml'):
@@ -107,55 +101,63 @@ voc_label = {'leaf,stem,soil'}
 dict_labels = dict(zip(voc_label, range(len(voc_label))))
 
 
-class read_voc(Dataset):
+class Read_voc(Dataset):
     def __init__(self, root_path):
-        super(read_voc).__init__()
+        super(Read_voc, self).__init__()
         self.root_path = root_path
         self.img_idx = []
         self.anno_idx = []
         self.bbox = []
         self.obj_name = []
         train_txt_path = self.root_path + "/file_names.txt"
-        print(train_txt_path)
-        self.img_path = self.root_path + "/*.rf.*.jpg"
-        self.csv_path = self.root_path + "/annotations.csv"
-        self.anno_path = self.root_path + "/*.rf.*.xml"
+        self.img_path = self.root_path
+        self.anno_path = self.root_path
 
         train_txt = open(train_txt_path)
         lines = train_txt.readlines()
-        for l in lines:
-            name = lines.strip().split()[0]
+        for line in lines:
+            name = line.strip().split()[0]
+            name = name.rstrip('.jpg')
             self.img_idx.append(self.img_path + name + '.jpg')
-            self.ano_idx.append(self.ano_path + name + '.xml')
+            self.anno_idx.append(self.anno_path + name + '.xml')
 
-
-def __getitem__(self, item):
-    img = cv2.imread(self.img_idx[item])
-    height, width, channels = img.shape
-    print(img)
-    targets = ET.parse(self.ano_idx[item])
-    res = []  # 存储标注信息 即边框左上角和右下角的四个点的坐标信息和目标的类别标签
-    for xml_file in glob.glob(root_dir + '/*.xml'):
-        if os.path.exists(xml_file):
-            bboxes, labels, width, height = parse_xml(xml_file)
+    def __getitem__(self, item):
+        img = Image.open(self.img_idx[item])
+        img = transforms.ToTensor()(img)
+        normalize(img)
+        targets = ET.parse(self.anno_idx[item])
+        res = []  # Store annotation information, i.e., coordinates of the bounding box's top left and bottom right
+        # points and the target's class label
+        for obj in targets.iter('object'):
+            bboxes, labels, width, height = parse_xml(self.anno_idx[item])
+            lbls = convert_label(labels)  # Convert label to number using convert_label() function
             res.append(bboxes)
-            res.append(labels)
+            res.append(lbls)
 
-    return img, res
+        return img, res
 
-
-def __length__(self):
-    data_length = len(self.img_idx)
-    return data_length
+    def __len__(self):
+        return len(self.img_idx)
 
 
 def main():
-    #  开始调用 Read_data类读取数据，并使用Dataloader生成迭代数据为送入模型中做准备
-    train_data = read_voc(root_path=root_dir)  # variable for dataset
-    train_loader = DataLoader(train_data, batch_size=5, shuffle=False)
-    img, res = train_loader
-    print(img, res)
+    root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/test/"
+    image_size = (256, 256)
+    train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
+    img, res = train_data[0]
+    print(img.size())
+    print(len(res)) #row
+    print(len(res[0])) #cols
+    print(train_data.__len__())
+    """train_loader = DataLoader(train_data, batch_size=5, shuffle=True)
+    for images, targets in train_loader:
+        # Process the batch of images and targets
+        # Example: print the shape of the batch
+        print("Batch shape - Images:", images.shape)
+        print("Batch shape - Targets:", targets.shape) """
 
+
+main()
 
 """
 # Network of CNN
