@@ -97,6 +97,19 @@ write_folder_names_to_text(folder_path, output_file) """
 
     print(f"CSV file saved at: {csv_file}")  """
 
+
+def display_image_with_boxes(image, boxes):
+    img_with_boxes = image.clone().permute(1, 2, 0).numpy()
+    plt.imshow(img_with_boxes)
+    ax = plt.gca()
+    for bbox in boxes:
+        xmin, ymin, xmax, ymax, lbls = bbox
+        color = 'blue' if lbls == 0 else 'red'  # blus as leaf , red as stem
+        rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, edgecolor=color, linewidth=2)
+        ax.add_patch(rect)
+    plt.show()
+
+
 voc_label = {'leaf,stem,soil'}
 dict_labels = dict(zip(voc_label, range(len(voc_label))))
 
@@ -128,13 +141,20 @@ class Read_voc(Dataset):
         targets = ET.parse(self.anno_idx[item])
         res = []  # Store annotation information, i.e., coordinates of the bounding box's top left and bottom right
         # points and the target's class label
-        for obj in targets.iter('object'):
+        result = []
+        if os.path.exists(self.root_path):
             bboxes, labels, width, height = parse_xml(self.anno_idx[item])
             lbls = convert_label(labels)  # Convert label to number using convert_label() function
             res.append(bboxes)
             res.append(lbls)
+            for bbox, label in zip(*res):
+                result.append(bbox + [label])
 
-        return img, res
+        else:
+            raise Exception('Path does not Exist!')
+        result = torch.stack([torch.tensor(box) for box in result])
+        # Convert result to a PyTorch tensor using torch.stack()
+        return img, result
 
     def __len__(self):
         return len(self.img_idx)
@@ -146,15 +166,14 @@ def main():
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
     img, res = train_data[0]
     print(img.size())
-    print(len(res)) #row
-    print(len(res[0])) #cols
+    print(len(res))  # row
+    print(len(res[0]))  # cols
     print(train_data.__len__())
-    """train_loader = DataLoader(train_data, batch_size=5, shuffle=True)
-    for images, targets in train_loader:
-        # Process the batch of images and targets
-        # Example: print the shape of the batch
-        print("Batch shape - Images:", images.shape)
-        print("Batch shape - Targets:", targets.shape) """
+    display_image_with_boxes(img, res)
+    # Display image and label.
+    train_dataloader = DataLoader(train_data, batch_size=64, shuffle=True)
+    train_features, train_labels = train_dataloader
+    print(train_features.size())
 
 
 main()
