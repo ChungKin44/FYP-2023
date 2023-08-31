@@ -155,6 +155,7 @@ class Read_voc(Dataset):
         res = torch.tensor(res)
         la = torch.tensor(la)
 
+
         return img, res, la
 
     def __len__(self):
@@ -172,7 +173,7 @@ def main():
 
     # display_image_with_boxes(img, res, lbls)
     # Display image and label.
-    train_dataloader = DataLoader(train_data, batch_size=2, shuffle=True)
+    train_dataloader = DataLoader(train_data[0], batch_size=4, shuffle=True)
     features, bbox, labels = train_dataloader
     print(features.size())
 
