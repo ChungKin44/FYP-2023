@@ -1,20 +1,13 @@
 # Preprocess
 import os
-import cv2
 import xml.etree.ElementTree as ET
-import csv
-from pathlib import Path
-import glob
-import numpy as np
-import matplotlib.pyplot as plt
-from PIL import Image
-from keras.preprocessing.image import img_to_array, array_to_img
 
+import matplotlib.pyplot as plt
 # Machine Learning
 import torch
-from torch import nn
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset
-from torchvision import datasets, transforms
+from torchvision import transforms
 
 
 def convert_label(lab):
@@ -36,10 +29,11 @@ def normalize(img_numpy_array):  # gray scale
 def parse_xml(xml_path):
     tree = ET.parse(xml_path)
     root = tree.getroot()
-
     bounding_boxes = []
     labels = []
+
     for obj in root.findall('object'):
+
         name = obj.find('name').text
         bndbox = obj.find('bndbox')
         xmin = int(bndbox.find('xmin').text)
@@ -51,7 +45,6 @@ def parse_xml(xml_path):
     size = root.find('size')
     width = int(size.find('width').text)
     height = int(size.find('height').text)
-
     return bounding_boxes, labels, width, height
 
 
@@ -98,12 +91,12 @@ write_folder_names_to_text(folder_path, output_file) """
     print(f"CSV file saved at: {csv_file}")  """
 
 
-def display_image_with_boxes(image, boxes):
+def display_image_with_boxes(image, boxes, lbls):
     img_with_boxes = image.clone().permute(1, 2, 0).numpy()
     plt.imshow(img_with_boxes)
     ax = plt.gca()
     for bbox in boxes:
-        xmin, ymin, xmax, ymax, lbls = bbox
+        xmin, ymin, xmax, ymax = bbox
         color = 'blue' if lbls == 0 else 'red'  # blus as leaf , red as stem
         rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, edgecolor=color, linewidth=2)
         ax.add_patch(rect)
@@ -135,26 +128,34 @@ class Read_voc(Dataset):
             self.anno_idx.append(self.anno_path + name + '.xml')
 
     def __getitem__(self, item):
+
         img = Image.open(self.img_idx[item])
         img = transforms.ToTensor()(img)
         normalize(img)
-        targets = ET.parse(self.anno_idx[item])
+
         res = []  # Store annotation information, i.e., coordinates of the bounding box's top left and bottom right
         # points and the target's class label
         result = []
+        la = []
+
         if os.path.exists(self.root_path):
             bboxes, labels, width, height = parse_xml(self.anno_idx[item])
+
             lbls = convert_label(labels)  # Convert label to number using convert_label() function
             res.append(bboxes)
-            res.append(lbls)
+            """res.append(lbls)
             for bbox, label in zip(*res):
-                result.append(bbox + [label])
+                result.append(bbox + [label])"""
+            la.append(lbls)
+
 
         else:
             raise Exception('Path does not Exist!')
-        result = torch.stack([torch.tensor(box) for box in result])
-        # Convert result to a PyTorch tensor using torch.stack()
-        return img, result
+
+        res = torch.tensor(res)
+        la = torch.tensor(la)
+
+        return img, res, la
 
     def __len__(self):
         return len(self.img_idx)
@@ -162,18 +163,18 @@ class Read_voc(Dataset):
 
 def main():
     root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/test/"
-    image_size = (256, 256)
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
-    img, res = train_data[0]
+    #img, res, lbls = train_data[0]
+
+    """print(type(res))
     print(img.size())
-    print(len(res))  # row
-    print(len(res[0]))  # cols
-    print(train_data.__len__())
-    display_image_with_boxes(img, res)
+    print(train_data.__len__())"""
+
+    # display_image_with_boxes(img, res, lbls)
     # Display image and label.
-    train_dataloader = DataLoader(train_data, batch_size=64, shuffle=True)
-    train_features, train_labels = train_dataloader
-    print(train_features.size())
+    train_dataloader = DataLoader(train_data, batch_size=2, shuffle=True)
+    features, bbox, labels = train_dataloader
+    print(features.size())
 
 
 main()
