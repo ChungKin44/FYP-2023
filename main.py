@@ -3,6 +3,7 @@ import os
 import xml.etree.ElementTree as ET
 
 import matplotlib.pyplot as plt
+import numpy as np
 # Machine Learning
 import torch
 from PIL import Image
@@ -33,7 +34,6 @@ def parse_xml(xml_path):
     labels = []
 
     for obj in root.findall('object'):
-
         name = obj.find('name').text
         bndbox = obj.find('bndbox')
         xmin = int(bndbox.find('xmin').text)
@@ -107,6 +107,13 @@ voc_label = {'leaf,stem,soil'}
 dict_labels = dict(zip(voc_label, range(len(voc_label))))
 
 
+def func(batch):
+    img, label = zip(*batch)
+    for i, l in enumerate(label):
+        l[:, 0] = i
+    return torch.stack(img, 0), torch.cat(label, 0)
+
+
 class Read_voc(Dataset):
     def __init__(self, root_path):
         super(Read_voc, self).__init__()
@@ -143,20 +150,19 @@ class Read_voc(Dataset):
 
             lbls = convert_label(labels)  # Convert label to number using convert_label() function
             res.append(bboxes)
-            """res.append(lbls)
+            res.append(lbls)
             for bbox, label in zip(*res):
-                result.append(bbox + [label])"""
+                result.append(bbox + [label])
             la.append(lbls)
 
 
         else:
             raise Exception('Path does not Exist!')
 
-        res = torch.tensor(res)
-        la = torch.tensor(la)
+        result = torch.from_numpy(np.array(result))
+        print(result.size())
 
-
-        return img, res, la
+        return img, result
 
     def __len__(self):
         return len(self.img_idx)
@@ -165,7 +171,7 @@ class Read_voc(Dataset):
 def main():
     root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/test/"
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
-    #img, res, lbls = train_data[0]
+    # img, res, lbls = train_data[0]
 
     """print(type(res))
     print(img.size())
@@ -173,9 +179,11 @@ def main():
 
     # display_image_with_boxes(img, res, lbls)
     # Display image and label.
-    train_dataloader = DataLoader(train_data[0], batch_size=4, shuffle=True)
-    features, bbox, labels = train_dataloader
-    print(features.size())
+
+    train_dataloader = DataLoader(train_data, batch_size=2, shuffle=True, collate_fn=func)
+    for index, data in enumerate(train_dataloader):
+        feature, labels = data
+        print(feature)
 
 
 main()
