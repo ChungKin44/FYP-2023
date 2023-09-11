@@ -1,14 +1,42 @@
 # Preprocess
 import os
+
+from torch.hub import load_state_dict_from_url
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 import xml.etree.ElementTree as ET
 
 import matplotlib.pyplot as plt
 import numpy as np
-# Machine Learning
+
+# Preprocessing including load dat
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
+
+# training and model
+import torch.nn as nn
+from torch import optim
+from d2l import torch as d2l
+from tqdm import tqdm
+import pandas as pd
+
+
+def check_cpu():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Using device:', device)
+    print()
+
+    # Additional Info when using cuda
+    if device.type == 'cuda':
+        print(torch.cuda.get_device_name(0))
+        print('Memory Usage:')
+        print('Allocated:', round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1), 'GB')
+        print('Cached:   ', round(torch.cuda.memory_cached(0) / 1024 ** 3, 1), 'GB')
+
+    return 0
 
 
 def convert_label(lab):
@@ -47,24 +75,6 @@ def parse_xml(xml_path):
     height = int(size.find('height').text)
     return bounding_boxes, labels, width, height
 
-
-""" def write_folder_names_to_text(folder_path, output_file):   #list all name of jpg into txt 
-    # Get the list of file names in the folder
-    file_names = os.listdir(folder_path)
-
-    # Create or overwrite the output file
-    with open(output_file, 'w') as f:
-        # Write each file name to a new line in the text file
-        for file_name in file_names:
-            if file_name.endswith('.jpg'):
-                f.write(file_name + '\n')
-
-    print(f"File names written to {output_file} successfully.")
-
-
-folder_path = "C:/Users/willi/OneDrive/桌面/Dataset/test"
-output_file = "C:/Users/willi/OneDrive/桌面/Dataset/test/file_names.txt"
-write_folder_names_to_text(folder_path, output_file) """
 
 """ def xml_to_csv(root_dir):                      #XML to CSV format 
     bbox = []
@@ -107,7 +117,7 @@ voc_label = {'leaf,stem,soil'}
 dict_labels = dict(zip(voc_label, range(len(voc_label))))
 
 
-def func(batch):
+def func(batch):  # https://blog.csdn.net/weixin_44326452/article/details/123015556
     img, label = zip(*batch)
     for i, l in enumerate(label):
         l[:, 0] = i
@@ -125,7 +135,7 @@ class Read_voc(Dataset):
         train_txt_path = self.root_path + "/file_names.txt"
         self.img_path = self.root_path
         self.anno_path = self.root_path
-
+        self.count = 0
         train_txt = open(train_txt_path)
         lines = train_txt.readlines()
         for line in lines:
@@ -135,7 +145,7 @@ class Read_voc(Dataset):
             self.anno_idx.append(self.anno_path + name + '.xml')
 
     def __getitem__(self, item):
-
+        print(self.img_idx)
         img = Image.open(self.img_idx[item])
         img = transforms.ToTensor()(img)
         normalize(img)
@@ -160,7 +170,7 @@ class Read_voc(Dataset):
             raise Exception('Path does not Exist!')
 
         result = torch.from_numpy(np.array(result))
-        print(result.size())
+        """print(result.size())    #check how many label of one images"""
 
         return img, result
 
@@ -168,69 +178,229 @@ class Read_voc(Dataset):
         return len(self.img_idx)
 
 
-def main():
-    root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/test/"
-    train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
-    # img, res, lbls = train_data[0]
+# Unet Model extract main feature (downward) https://blog.csdn.net/weixin_44791964/article/details/108866828
+class VGG(nn.Module):
+    def __init__(self, features, num_classes=4):
+        super(VGG, self).__init__()
+        self.features = features
+        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
+        self.classifier = nn.Sequential(
+            nn.Linear(512 * 7 * 7, 4096),
+            nn.ReLU(True),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(True),
+            nn.Dropout(),
+            nn.Linear(4096, num_classes),
+        )
+        self._initialize_weights()
 
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+
+def make_layers(cfg, batch_norm=False, in_channels=3):
+    layers = []
+    for v in cfg:
+        if v == 'M':
+            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+        else:
+            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+            if batch_norm:
+                layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
+            else:
+                layers += [conv2d, nn.ReLU(inplace=True)]
+            in_channels = v
+    return nn.Sequential(*layers)
+
+
+cfgs = {
+    'D': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M']
+}
+
+
+def VGG16(pretrained, in_channels, **kwargs):
+    model = VGG(make_layers(cfgs["D"], batch_norm=False, in_channels=in_channels), **kwargs)
+    if pretrained:
+        state_dict = load_state_dict_from_url('https://download.pytorch.org/models/vgg16-397923af.pth',
+                                              model_dir="./model_data")
+        model.load_state_dict(state_dict)
+
+    del model.avgpool
+    del model.classifier
+    return model
+
+
+# Sampling feature combination (Upward)
+class unetUp(nn.Module):
+    def __init__(self, in_size, out_size):
+        super(unetUp, self).__init__()
+        self.conv1 = nn.Conv2d(in_size, out_size, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(out_size, out_size, kernel_size=3, padding=1)
+        self.up = nn.UpsamplingBilinear2d(scale_factor=2)
+
+    def forward(self, inputs1, inputs2):
+        outputs = torch.cat([inputs1, self.up(inputs2)], 1)
+        outputs = self.conv1(outputs)
+        outputs = self.conv2(outputs)
+        return outputs
+
+
+class Unet(nn.Module):
+    def __init__(self, num_classes=21, in_channels=3, pretrained=False):
+        super(Unet, self).__init__()
+        self.vgg = VGG16(pretrained=pretrained, in_channels=in_channels)
+        in_filters = [192, 384, 768, 1024]
+        out_filters = [64, 128, 256, 512]
+        # Up sampling
+        self.up_concat4 = unetUp(in_filters[3], out_filters[3])
+        self.up_concat3 = unetUp(in_filters[2], out_filters[2])
+        self.up_concat2 = unetUp(in_filters[1], out_filters[1])
+        self.up_concat1 = unetUp(in_filters[0], out_filters[0])
+
+        # final conv (without any concat)
+        self.final = nn.Conv2d(out_filters[0], num_classes, 1)
+
+    def forward(self, inputs):
+        feat1 = self.vgg.features[:4](inputs)
+        feat2 = self.vgg.features[4:9](feat1)
+        feat3 = self.vgg.features[9:16](feat2)
+        feat4 = self.vgg.features[16:23](feat3)
+        feat5 = self.vgg.features[23:-1](feat4)
+
+        up4 = self.up_concat4(feat4, feat5)
+        up3 = self.up_concat3(feat3, up4)
+        up2 = self.up_concat2(feat2, up3)
+        up1 = self.up_concat1(feat1, up2)
+
+        final = self.final(up1)
+
+        return final
+
+    def _initialize_weights(self, *stages):
+        for modules in stages:
+            for module in modules.modules():
+                if isinstance(module, nn.Conv2d):
+                    nn.init.kaiming_normal_(module.weight)
+                    if module.bias is not None:
+                        module.bias.data.zero_()
+                elif isinstance(module, nn.BatchNorm2d):
+                    module.weight.data.fill_(1)
+                    module.bias.data.zero_()
+
+
+def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs, scheduler, devices=d2l.try_all_gpus()):
+    timer, num_batches = d2l.Timer(), len(train_iter)
+    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
+                            legend=['train loss', 'train acc', 'test acc'])
+    net = nn.DataParallel(net, device_ids=devices).to(devices[0])
+
+    loss_list = []
+    train_acc_list = []
+    test_acc_list = []
+    epochs_list = []
+    time_list = []
+    for epoch in range(num_epochs):
+        # Sum of training loss, sum of training accuracy, no. of examples,
+        # no. of predictions
+        metric = d2l.Accumulator(4)
+        for i, (features, labels) in enumerate(train_iter):
+            timer.start()
+            l, acc = d2l.train_batch_ch13(
+                net, features, labels.long(), loss, trainer, devices)
+            metric.add(l, acc, labels.shape[0], labels.numel())
+            timer.stop()
+            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
+                animator.add(epoch + (i + 1) / num_batches,
+                             (metric[0] / metric[2], metric[1] / metric[3],
+                              None))
+        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
+        animator.add(epoch + 1, (None, None, test_acc))
+        scheduler.step()
+
+        print(
+            f"epoch {epoch + 1} --- loss {metric[0] / metric[2]:.3f} ---  train acc {metric[1] / metric[3]:.3f} --- test acc {test_acc:.3f} --- cost time {timer.sum()}")
+
+        # ---------保存训练数据---------------
+        """ df = pd.DataFrame()
+        loss_list.append(metric[0] / metric[2])
+        train_acc_list.append(metric[1] / metric[3])
+        test_acc_list.append(test_acc)
+        epochs_list.append(epoch)
+        time_list.append(timer.sum())
+
+        df['epoch'] = epochs_list
+        df['loss'] = loss_list
+        df['train_acc'] = train_acc_list
+        df['test_acc'] = test_acc_list
+        df['time'] = time_list
+        df.to_excel("C:/Users/willi/OneDrive/桌面/Final Year Project/Unet++_camvid1.xlsx")
+        # ----------------保存模型-------------------
+        if np.mod(epoch + 1, 5) == 0:
+            torch.save(model.state_dict(), f'C:/Users/willi/OneDrive/桌面/Final Year Project/Unet++_{epoch + 1}.pth') """
+
+
+def main():
+    root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/train/"
+    train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
+    # check_cpu()             #checking the training module is using cpu/gpu?
     """print(type(res))
     print(img.size())
     print(train_data.__len__())"""
-
+    train_dataset, test_dataset = random_split(
+        dataset=train_data,
+        lengths=[100, 50],
+        generator=torch.Generator().manual_seed(0)
+    )
     # display_image_with_boxes(img, res, lbls)
     # Display image and label.
-
-    train_dataloader = DataLoader(train_data, batch_size=2, shuffle=True, collate_fn=func)
-    for index, data in enumerate(train_dataloader):
+    size = 2
+    train_dataloader = DataLoader(train_dataset, batch_size=size, shuffle=True, collate_fn=func)
+    test_dataloader = DataLoader(test_dataset, batch_size=size, shuffle=True, collate_fn=func)
+    count = 0
+    """" for index, data in enumerate(train_dataloader):
         feature, labels = data
-        print(feature)
+        print(feature.size())
+        count = count + 1
+    print(count) """
+    # print(len(train_dataloader))         #check the integrity of dataset loader
+    # print(len(test_dataloader))
+
+    # Model Configuration
+    """model = UNet()
+    print(model)
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = optim.RMSprop(model.parameters(),
+                              lr=0.001, weight_decay=True, momentum=0.9)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10)  # goal: maximize Dice score """
+    model = UnetPlusPlus(num_classes=1 + 3).cuda()  # class = stem,leaf,soil =3
+    # 载入预训练模型
+    # model.load_state_dict(torch.load(r"checkpoints/Unet++_25.pth"),strict=False)
+
+    # 损失函数选用多分类交叉熵损失函数
+    lossf = nn.CrossEntropyLoss(ignore_index=255)
+    # 选用adam优化器来训练
+    optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.1, last_epoch=-1)
+    epochs_num = 5
+    train_ch13(model, train_dataloader, test_dataloader, lossf, optimizer, epochs_num, scheduler)
 
 
 main()
-
-"""
-# Network of CNN
-
-class Network(nn.Module):
-
-    def __init__(self, num_classes=21, groups=2):
-        super(Network, self).__init__()
-
-        self.conv = nn.Sequential()
-        self.conv.add_module('conv1_s1', nn.Conv2d(3, 96, kernel_size=11, stride=4, padding=0))
-        self.conv.add_module('relu1_s1', nn.ReLU(inplace=True))
-        # self.conv.add_module('bn1_s1',nn.BatchNorm2d(96))
-        self.conv.add_module('pool1_s1', nn.MaxPool2d(kernel_size=3, stride=2))
-        self.conv.add_module('lrn1_s1', LRN(local_size=5, alpha=0.0001, beta=0.75))
-
-        self.conv.add_module('conv2_s1', nn.Conv2d(96, 256, kernel_size=5, padding=2, groups=groups))
-        self.conv.add_module('relu2_s1', nn.ReLU(inplace=True))
-        # self.conv.add_module('bn2_s1',nn.BatchNorm2d(256))
-        self.conv.add_module('pool2_s1', nn.MaxPool2d(kernel_size=3, stride=2))
-        self.conv.add_module('lrn2_s1', LRN(local_size=5, alpha=0.0001, beta=0.75))
-
-        self.conv.add_module('conv3_s1', nn.Conv2d(256, 384, kernel_size=3, padding=1))
-        self.conv.add_module('relu3_s1', nn.ReLU(inplace=True))
-        # self.conv.add_module('bn3_s1',nn.BatchNorm2d(384))
-
-        self.conv.add_module('conv4_s1', nn.Conv2d(384, 384, kernel_size=3, padding=1, groups=groups))
-        # self.conv.add_module('bn4_s1',nn.BatchNorm2d(384))
-        self.conv.add_module('relu4_s1', nn.ReLU(inplace=True))
-
-        self.conv.add_module('conv5_s1', nn.Conv2d(384, 256, kernel_size=3, padding=1, groups=groups))
-        # self.conv.add_module('bn5_s1',nn.BatchNorm2d(256))
-        self.conv.add_module('relu5_s1', nn.ReLU(inplace=True))
-        self.conv.add_module('pool5_s1', nn.MaxPool2d(kernel_size=3, stride=2))
-
-        self.fc6 = nn.Sequential()
-        self.fc6.add_module('fc6_s1', nn.Linear(256 * 6 * 6, 4096))
-        self.fc6.add_module('relu6_s1', nn.ReLU(inplace=True))
-        self.fc6.add_module('drop6_s1', nn.Dropout(p=0.5))
-
-        self.fc7 = nn.Sequential()
-        self.fc7.add_module('fc7', nn.Linear(4096, 4096))
-        self.fc7.add_module('relu7', nn.ReLU(inplace=True))
-        self.fc7.add_module('drop7', nn.Dropout(p=0.5))
-
-        self.classifier = nn.Sequential()
-        self.classifier.add_module('fc8', nn.Linear(4096, num_classes))   """
