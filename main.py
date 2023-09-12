@@ -1,22 +1,21 @@
 # Preprocess
 import os
 
-from torch.hub import load_state_dict_from_url
-
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
+# Basic Library
 import xml.etree.ElementTree as ET
-
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Preprocessing including load dat
+# 1. Preprocessing including load data
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
 
-# training and model
+# 2. training and model
+import unet  # from unet.py
 import torch.nn as nn
 from torch import optim
 from d2l import torch as d2l
@@ -30,13 +29,13 @@ def check_cpu():
     print()
 
     # Additional Info when using cuda
-    if device.type == 'cuda':
+    """if device.type == 'cuda':
         print(torch.cuda.get_device_name(0))
         print('Memory Usage:')
         print('Allocated:', round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1), 'GB')
-        print('Cached:   ', round(torch.cuda.memory_cached(0) / 1024 ** 3, 1), 'GB')
+        print('Cached:   ', round(torch.cuda.memory_cached(0) / 1024 ** 3, 1), 'GB') """
 
-    return 0
+    return device
 
 
 def convert_label(lab):
@@ -178,134 +177,6 @@ class Read_voc(Dataset):
         return len(self.img_idx)
 
 
-# Unet Model extract main feature (downward) https://blog.csdn.net/weixin_44791964/article/details/108866828
-class VGG(nn.Module):
-    def __init__(self, features, num_classes=4):
-        super(VGG, self).__init__()
-        self.features = features
-        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
-        self.classifier = nn.Sequential(
-            nn.Linear(512 * 7 * 7, 4096),
-            nn.ReLU(True),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(True),
-            nn.Dropout(),
-            nn.Linear(4096, num_classes),
-        )
-        self._initialize_weights()
-
-    def forward(self, x):
-        x = self.features(x)
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
-
-
-def make_layers(cfg, batch_norm=False, in_channels=3):
-    layers = []
-    for v in cfg:
-        if v == 'M':
-            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
-        else:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
-            if batch_norm:
-                layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
-            else:
-                layers += [conv2d, nn.ReLU(inplace=True)]
-            in_channels = v
-    return nn.Sequential(*layers)
-
-
-cfgs = {
-    'D': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M']
-}
-
-
-def VGG16(pretrained, in_channels, **kwargs):
-    model = VGG(make_layers(cfgs["D"], batch_norm=False, in_channels=in_channels), **kwargs)
-    if pretrained:
-        state_dict = load_state_dict_from_url('https://download.pytorch.org/models/vgg16-397923af.pth',
-                                              model_dir="./model_data")
-        model.load_state_dict(state_dict)
-
-    del model.avgpool
-    del model.classifier
-    return model
-
-
-# Sampling feature combination (Upward)
-class unetUp(nn.Module):
-    def __init__(self, in_size, out_size):
-        super(unetUp, self).__init__()
-        self.conv1 = nn.Conv2d(in_size, out_size, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(out_size, out_size, kernel_size=3, padding=1)
-        self.up = nn.UpsamplingBilinear2d(scale_factor=2)
-
-    def forward(self, inputs1, inputs2):
-        outputs = torch.cat([inputs1, self.up(inputs2)], 1)
-        outputs = self.conv1(outputs)
-        outputs = self.conv2(outputs)
-        return outputs
-
-
-class Unet(nn.Module):
-    def __init__(self, num_classes=21, in_channels=3, pretrained=False):
-        super(Unet, self).__init__()
-        self.vgg = VGG16(pretrained=pretrained, in_channels=in_channels)
-        in_filters = [192, 384, 768, 1024]
-        out_filters = [64, 128, 256, 512]
-        # Up sampling
-        self.up_concat4 = unetUp(in_filters[3], out_filters[3])
-        self.up_concat3 = unetUp(in_filters[2], out_filters[2])
-        self.up_concat2 = unetUp(in_filters[1], out_filters[1])
-        self.up_concat1 = unetUp(in_filters[0], out_filters[0])
-
-        # final conv (without any concat)
-        self.final = nn.Conv2d(out_filters[0], num_classes, 1)
-
-    def forward(self, inputs):
-        feat1 = self.vgg.features[:4](inputs)
-        feat2 = self.vgg.features[4:9](feat1)
-        feat3 = self.vgg.features[9:16](feat2)
-        feat4 = self.vgg.features[16:23](feat3)
-        feat5 = self.vgg.features[23:-1](feat4)
-
-        up4 = self.up_concat4(feat4, feat5)
-        up3 = self.up_concat3(feat3, up4)
-        up2 = self.up_concat2(feat2, up3)
-        up1 = self.up_concat1(feat1, up2)
-
-        final = self.final(up1)
-
-        return final
-
-    def _initialize_weights(self, *stages):
-        for modules in stages:
-            for module in modules.modules():
-                if isinstance(module, nn.Conv2d):
-                    nn.init.kaiming_normal_(module.weight)
-                    if module.bias is not None:
-                        module.bias.data.zero_()
-                elif isinstance(module, nn.BatchNorm2d):
-                    module.weight.data.fill_(1)
-                    module.bias.data.zero_()
-
-
 def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs, scheduler, devices=d2l.try_all_gpus()):
     timer, num_batches = d2l.Timer(), len(train_iter)
     animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
@@ -360,7 +231,7 @@ def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs, scheduler,
 def main():
     root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/train/"
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
-    # check_cpu()             #checking the training module is using cpu/gpu?
+    device = check_cpu()             #checking the training module is using cpu/gpu?
     """print(type(res))
     print(img.size())
     print(train_data.__len__())"""
@@ -384,23 +255,16 @@ def main():
     # print(len(test_dataloader))
 
     # Model Configuration
-    """model = UNet()
-    print(model)
-    loss_fn = nn.CrossEntropyLoss()
+    model = unet.UNet(n_channels=3, n_classes=1 + 3, bilinear=True).to(device)
     optimizer = optim.RMSprop(model.parameters(),
-                              lr=0.001, weight_decay=True, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10)  # goal: maximize Dice score """
-    model = UnetPlusPlus(num_classes=1 + 3).cuda()  # class = stem,leaf,soil =3
-    # 载入预训练模型
-    # model.load_state_dict(torch.load(r"checkpoints/Unet++_25.pth"),strict=False)
+                              lr=1e-5, weight_decay=1e-8, momentum=0.999)
 
-    # 损失函数选用多分类交叉熵损失函数
-    lossf = nn.CrossEntropyLoss(ignore_index=255)
-    # 选用adam优化器来训练
-    optimizer = optim.SGD(model.parameters(), lr=0.1, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.1, last_epoch=-1)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+    grad_scaler = torch.cuda.amp.GradScaler(enabled=False)
+    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     epochs_num = 5
-    train_ch13(model, train_dataloader, test_dataloader, lossf, optimizer, epochs_num, scheduler)
+    # Train start
+    train_ch13(model, train_dataloader, test_dataloader, criterion, optimizer, epochs_num, scheduler)
 
 
 main()
