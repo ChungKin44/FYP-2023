@@ -1,6 +1,8 @@
 # Preprocess
 import os
 
+from torchvision.utils import save_image
+
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 # Basic Library
@@ -177,94 +179,134 @@ class Read_voc(Dataset):
         return len(self.img_idx)
 
 
-def train_ch13(net, train_iter, test_iter, loss, trainer, num_epochs, scheduler, devices=d2l.try_all_gpus()):
-    timer, num_batches = d2l.Timer(), len(train_iter)
-    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0, 1],
-                            legend=['train loss', 'train acc', 'test acc'])
-    net = nn.DataParallel(net, device_ids=devices).to(devices[0])
+def train_loop(dataloader, model, loss_fn, optimizer, device):
+    size = len(dataloader.dataset)
+    model.train()
+    for batch, (X, y) in enumerate(dataloader):
+        # Move data to the same device as the model
+        X = X.to(device)
+        y = y.to(device)
 
-    loss_list = []
-    train_acc_list = []
-    test_acc_list = []
-    epochs_list = []
-    time_list = []
-    for epoch in range(num_epochs):
-        # Sum of training loss, sum of training accuracy, no. of examples,
-        # no. of predictions
-        metric = d2l.Accumulator(4)
-        for i, (features, labels) in enumerate(train_iter):
-            timer.start()
-            l, acc = d2l.train_batch_ch13(
-                net, features, labels.long(), loss, trainer, devices)
-            metric.add(l, acc, labels.shape[0], labels.numel())
-            timer.stop()
-            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
-                animator.add(epoch + (i + 1) / num_batches,
-                             (metric[0] / metric[2], metric[1] / metric[3],
-                              None))
-        test_acc = d2l.evaluate_accuracy_gpu(net, test_iter)
-        animator.add(epoch + 1, (None, None, test_acc))
-        scheduler.step()
+        # Compute prediction and loss
+        pred = model(X)
 
-        print(
-            f"epoch {epoch + 1} --- loss {metric[0] / metric[2]:.3f} ---  train acc {metric[1] / metric[3]:.3f} --- test acc {test_acc:.3f} --- cost time {timer.sum()}")
+        loss = loss_fn(pred, y)
 
-        # ---------保存训练数据---------------
-        """ df = pd.DataFrame()
-        loss_list.append(metric[0] / metric[2])
-        train_acc_list.append(metric[1] / metric[3])
-        test_acc_list.append(test_acc)
-        epochs_list.append(epoch)
-        time_list.append(timer.sum())
+        # Backpropagation
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
 
-        df['epoch'] = epochs_list
-        df['loss'] = loss_list
-        df['train_acc'] = train_acc_list
-        df['test_acc'] = test_acc_list
-        df['time'] = time_list
-        df.to_excel("C:/Users/willi/OneDrive/桌面/Final Year Project/Unet++_camvid1.xlsx")
-        # ----------------保存模型-------------------
-        if np.mod(epoch + 1, 5) == 0:
-            torch.save(model.state_dict(), f'C:/Users/willi/OneDrive/桌面/Final Year Project/Unet++_{epoch + 1}.pth') """
+        if batch % 100 == 0:
+            loss, current = loss.item(), (batch + 1) * len(X)
+            print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+
+
+def test_loop(dataloader, model, loss_fn, device):
+    model.eval()
+    size = len(dataloader.dataset)
+    num_batches = len(dataloader)
+    test_loss, correct = 0, 0
+
+    with torch.no_grad():
+        for X, y in dataloader:
+            # Move data to the same device as the model
+            X = X.to(device)
+            y = y.to(device)
+
+            pred = model(X)
+            test_loss += loss_fn(pred, y).item()
+            correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+
+    test_loss /= num_batches
+    correct /= size
+    print(f"Test Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+
+
+"""def train(net, train_iter, test_iter, loss, trainer, num_epochs, scheduler, device):
+    num_epochs = 1
+    while True:
+        for inputs, labels in train_iter:
+            inputs, labels = inputs.to(device), labels.to(device)
+            out = net(inputs)
+            loss = loss(out, labels)
+            # 后向
+            print(loss)
+            trainer.zero_grad()
+            loss.backward()
+            trainer.step()
+
+            # 输入的图像，取第一张
+            x = inputs[0]
+            # 生成的图像，取第一张
+            x_ = out[0]
+            # 标签的图像，取第一张
+            y = labels[0]
+            # 三张图，从第0轴拼接起来，再保存
+            img = torch.stack([x, x_, y], 0)
+            save_image(img.cpu(),
+                       os.path.join("C:/Users/willi/PycharmProjects/modelling/Dataset/", f"{num_epochs}.png"))
+            print("image save successfully !")
+
+        print(f"\nEpoch: {num_epochs}/{stop_value}, Loss: {loss}")"""
+
+import segmentation_models_pytorch as smp
 
 
 def main():
-    root_dir = "C:/Users/willi/OneDrive/桌面/Dataset/train/"
+    root_dir = "C:/Users/willi/PycharmProjects/modelling/Dataset/test/"
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
-    device = check_cpu()             #checking the training module is using cpu/gpu?
+    device = check_cpu()  # checking the training module is using cpu/gpu?
     """print(type(res))
     print(img.size())
     print(train_data.__len__())"""
     train_dataset, test_dataset = random_split(
         dataset=train_data,
-        lengths=[100, 50],
+        lengths=[1, 1],
         generator=torch.Generator().manual_seed(0)
     )
     # display_image_with_boxes(img, res, lbls)
     # Display image and label.
-    size = 2
+    size = 5
     train_dataloader = DataLoader(train_dataset, batch_size=size, shuffle=True, collate_fn=func)
     test_dataloader = DataLoader(test_dataset, batch_size=size, shuffle=True, collate_fn=func)
+
     count = 0
-    """" for index, data in enumerate(train_dataloader):
+    """for index, data in enumerate(train_dataloader):
         feature, labels = data
-        print(feature.size())
+        print(feature.size())    # 5,3,480,640
         count = count + 1
     print(count) """
     # print(len(train_dataloader))         #check the integrity of dataset loader
     # print(len(test_dataloader))
 
     # Model Configuration
-    model = unet.UNet(n_channels=3, n_classes=1 + 3, bilinear=True).to(device)
+    """model = unet.UNet(n_channels=3, n_classes=1 + 3, bilinear=True).to(device)
     optimizer = optim.RMSprop(model.parameters(),
                               lr=1e-5, weight_decay=1e-8, momentum=0.999)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=False)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
+    loss_fn = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     epochs_num = 5
     # Train start
-    train_ch13(model, train_dataloader, test_dataloader, criterion, optimizer, epochs_num, scheduler)
+    train_loop(train_dataloader, model, loss_fn, optimizer, device)
+    # train(model, train_dataloader, test_dataloader, criterion, optimizer, epochs_num, scheduler, device) """
+
+    CLASSES = ['stem', 'soil', 'leaf']
+
+    model = unet.UNet(n_channels=3, n_classes=3)
+    model = model.cuda()
+
+    loss_fn = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-5)
+
+    epochs = 5
+    for t in range(epochs):
+        print(f"Epoch {t + 1}\n-------------------------------")
+        train_loop(train_dataloader, model, loss_fn, optimizer, device)
+        test_loop(test_dataloader, model, loss_fn, device)
+    print("Done!")
 
 
 main()
