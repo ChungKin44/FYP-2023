@@ -356,7 +356,7 @@ def main():
         train_loop(train_dataloader, model, loss_fn, optimizer, device)
         test_loop(test_dataloader, model, loss_fn, device)
         end_time = time.time()
-        print('————Train time in this epoch: ————{:.2f}'.format((end_time - start_time)), 'minutes')
+        print('Epoch End ————Train time in this epoch: ———— {:.2f}'.format((end_time - start_time)), 'minutes')
 
 
 main()
