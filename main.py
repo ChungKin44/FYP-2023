@@ -1,9 +1,7 @@
 # Preprocess
 import os
-
-from torchvision.utils import save_image
-
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+from torchvision.utils import save_image
 
 # Basic Library
 import xml.etree.ElementTree as ET
@@ -26,11 +24,13 @@ from d2l import torch as d2l
 from tqdm import tqdm
 import pandas as pd
 
+# 2.1 training parameter
+from sklearn.metrics import f1_score, accuracy_score, jaccard_score
+
 
 def check_cpu():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Using device:', device)
-    print()
 
     # Additional Info when using cuda
     """if device.type == 'cuda':
@@ -94,6 +94,18 @@ def denormalize(img_3d_list):
     return modified_image
 
 
+def display_mask(X, predict, y,batch):
+    x = X[0]
+    x_ = predict[0]
+    la = y[0]
+    # 3 image with order : input , label , result from Unet
+    img = torch.stack([x, la, x_], 0)
+    save_image(img.cpu(), os.path.join('./result_img/', f"{batch}.png"))
+    print("image save successfully !")
+
+    return 0
+
+
 def parse_xml(xml_path):
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -130,25 +142,12 @@ def parse_xml(xml_path):
     return bounding_boxes, labels, width, height, polygons
 
 
-def display_image_with_polygon(data):
-    image = Image.open("C:/Users/willi/PycharmProjects/modelling/Dataset/test/0629_png.rf"
-                       ".6b99a0487d60046d94ad65c6e4cc131b.jpg")
-    image.show()
-    img, label = data[1]
-    for bbox in boxes:
-        xmin, ymin, xmax, ymax = bbox
-        color = 'blue' if lbls == 0 else 'red'  # blus as leaf , red as stem
-        rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, edgecolor=color, linewidth=2)
-        ax.add_patch(rect)
-    plt.show()
-
-
 def polygon_to_mask(labels):
     labels = labels.tolist()
     current_label = None
     polygon_points = []
 
-    fig, ax = plt.subplots()  # figsize=(3.2, 3.2)) if image size = 320 * 320
+    fig, ax = plt.subplots(figsize=(3.2, 3.2))  # figsize=(3.2, 3.2) if image size = 320 * 320
     for point in labels:
         x, y, label = point
 
@@ -253,42 +252,83 @@ class Read_voc(Dataset):
 import torch.nn.functional as F
 
 
+def save_model(ep, total_ep, loss, model):
+    folder = './model'
+
+    if ep == total_ep:
+        # file looping
+        for filename in os.listdir(folder):
+            file_path = os.path.join(folder, filename)
+
+            # Check if there is file
+            if os.path.isfile(file_path):
+                # Extract the history loss of the 'model' folder
+                history_loss = float(filename.split("_")[2][:-3])
+                # Check if the average current loss > history loss
+                if loss > history_loss:
+                    # Specify the file path with proper formatting
+                    model_path = './model/model_{}_{}.pt'.format(ep, loss)
+                    # Save the model
+                    torch.save({'model': model.state_dict()}, model_path)
+                    print("model_copy is saved !")
+
+
 # Train Part
-def train_loop(dataloader, model, loss_fn, optimizer, device):
+def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
     size = len(dataloader.dataset)
+    f1_scores = []
+    accuracies = []
     model.train()
+
     for batch, (X, y) in enumerate(dataloader):
-        # Move data using memory from GPU for the model
+        # Data processing
         X = X.to(device)
         y = polygon_to_mask(y)
+
         y = np.transpose(y, (2, 0, 1))
         y = normalize(y)
         y = y[None, :]
         y = y.to(device)
-        # print(X)
-        # print(y.size())
 
         # Compute prediction and loss
-        predict = model(X)
-        # show_Unet_result(predict)  #for showing after Unet image """
-        # print(predict.size())
-        loss = loss_fn(predict, y)
+        predict_x = model(X)
+        # display_mask(X, predict_x, y,batch)     # for show image and mask
+        loss = loss_fn(predict_x, y)
 
         # Backpropagation
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
-
+        # Calculate Loss rate,F1 score and accuracy
         loss, current = loss.item(), (batch + 1) * len(X)
-        print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+        true_mask = y.detach().cpu().numpy()
+        prediction_x = predict_x.detach().cpu().numpy()
+        true_mask = np.argmax(true_mask, axis=1)
+        prediction_x = np.argmax(prediction_x, axis=1)
+
+        f1 = f1_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')    # all became 1D array
+        iou = jaccard_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')  # for segmentation task
+        accuracy = accuracy_score(true_mask.reshape(-1), prediction_x.reshape(-1))     # for classification task
+        f1_scores.append(f1)
+        accuracies.append(accuracy)
+
+        print(f"loss: {loss:>6f}  F1 score: {f1:.4f}  Accuracy: {accuracy * 100:.2f}% IoU: {iou:.4f}[{current:>5d}/{size:>5d}]")
+        # save_model(ep, epochs, loss, model)
 
 
-def test_loop(dataloader, model, loss_fn, device):
+        """## 读取模型
+    model = net()
+    state_dict = torch.load('model_name.pth') # https://blog.csdn.net/qq_41845478/article/details/116023691?ops_request_misc=&request_id=&biz_id=102&utm_term=save%20a%20model%20pytorch&utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-0-116023691.142^v94^chatsearchT3_1&spm=1018.2226.3001.4187
+    model.load_state_dict(state_dict['model'])"""
+
+
+def test_loop(dataloader, model, loss_fn, device, epochs):
     model.eval()
     size = len(dataloader.dataset)
     num_batches = len(dataloader)
     test_loss, correct = 0, 0
+    ep = 0
 
     with torch.no_grad():
         for X, y in dataloader:
@@ -299,18 +339,28 @@ def test_loop(dataloader, model, loss_fn, device):
             y = normalize(y)
             y = y[None, :]
             y = y.to(device)
-
             predict = model(X)
             test_loss += loss_fn(predict, y).item()
             correct += (predict.argmax(1) == y).type(torch.float).sum().item()
 
     test_loss /= num_batches
     correct /= size
-    print(f"Test Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+
+    # print(f"Test Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+    print(f"Test Error: \n Avg loss: {test_loss:>8f} \n")
+    if ep == epochs:
+        plt.plot(test_loss)
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.ylim(0, 10)
+        plt.title('Training Loss')
+        plt.show()
+    else:
+        ep += 1
 
 
 def main():
-    root_dir = "C:/Users/willi/PycharmProjects/modelling/Dataset/train/"
+    root_dir = "C:/Users/willi/PycharmProjects/modelling/Dataset/test/"
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
     device = check_cpu()  # checking the training module is using cpu/gpu?
     # display_image_with_polygon(train_data)                                        # Display image and label.
@@ -319,16 +369,16 @@ def main():
     print(label.size())
     print(train_data.__len__())
     display_image_with_boxes(img, res, label)"""
-    train_dataset, test_dataset = random_split(     # 70% for train set , 30% for test set
+    """train_dataset, test_dataset = random_split(  # 70% for train set , 30% for test set
         dataset=train_data,
         lengths=[90, 60],
         generator=torch.Generator().manual_seed(0)
-    )
-
+    )"""
     # Pytorch load Data
     b_size = 1
-    train_dataloader = DataLoader(train_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
-    test_dataloader = DataLoader(test_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
+    train_dataloader = DataLoader(train_data, batch_size=b_size, shuffle=True, collate_fn=func)
+    #train_dataloader = DataLoader(train_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
+    #test_dataloader = DataLoader(test_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
 
     """ count = 0
     # Display image and label.
@@ -349,14 +399,14 @@ def main():
     loss_fn = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-5)
 
-    epochs = 1
+    epochs = 10  # "time of training loop" value
     for t in range(epochs):
         start_time = time.time()
         print(f"Epoch {t + 1}\n-------------------------------")
-        train_loop(train_dataloader, model, loss_fn, optimizer, device)
-        test_loop(test_dataloader, model, loss_fn, device)
+        train_loop(train_dataloader, model, loss_fn, optimizer, device, epochs)
+        #test_loop(test_dataloader, model, loss_fn, device, epochs)
         end_time = time.time()
-        print('Epoch End ————Train time in this epoch: ———— {:.2f}'.format((end_time - start_time)), 'minutes')
+        print('Epoch End ————Train time in this epoch: ———— {:.2f}'.format((end_time - start_time)), 'seconds')
 
 
 main()
