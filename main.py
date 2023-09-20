@@ -94,14 +94,16 @@ def denormalize(img_3d_list):
     return modified_image
 
 
-def display_mask(X, predict, y,batch):
+def display_mask(X, predict, y, batch):
     x = X[0]
     x_ = predict[0]
     la = y[0]
-    # 3 image with order : input , label , result from Unet
+    # 3 images with order: input, label, result from Unet
     img = torch.stack([x, la, x_], 0)
     save_image(img.cpu(), os.path.join('./result_img/', f"{batch}.png"))
-    print("image save successfully !")
+
+    if batch == len(X) - 1:           # check the print only one time
+        print("Image save successfully!")
 
     return 0
 
@@ -147,7 +149,7 @@ def polygon_to_mask(labels):
     current_label = None
     polygon_points = []
 
-    fig, ax = plt.subplots(figsize=(3.2, 3.2))  # figsize=(3.2, 3.2) if image size = 320 * 320
+    fig, ax = plt.subplots(figsize=(6.4, 4.8))  # figsize =(3.2, 3.2) if image size = 320 * 320
     for point in labels:
         x, y, label = point
 
@@ -157,7 +159,7 @@ def polygon_to_mask(labels):
                 ax.add_patch(polygon)
             polygon_points = []
             current_label = label
-            color = 'green' if label == 0 else 'yellow'
+            color = 'green' if label == 0 else 'red'
 
         polygon_points.append([x, y])
 
@@ -292,7 +294,7 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
 
         # Compute prediction and loss
         predict_x = model(X)
-        # display_mask(X, predict_x, y,batch)     # for show image and mask
+        display_mask(X, predict_x, y, batch)     # for show image and mask
         loss = loss_fn(predict_x, y)
 
         # Backpropagation
@@ -313,7 +315,7 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
         f1_scores.append(f1)
         accuracies.append(accuracy)
 
-        print(f"loss: {loss:>6f}  F1 score: {f1:.4f}  Accuracy: {accuracy * 100:.2f}% IoU: {iou:.4f}[{current:>5d}/{size:>5d}]")
+        print(f"loss: {loss:>6f}  F1 score: {f1:.4f}  Accuracy: {accuracy * 100:.2f}% IoU: {iou * 100:.4f}[{current:>5d}/{size:>5d}]")
         # save_model(ep, epochs, loss, model)
 
 
@@ -402,11 +404,12 @@ def main():
     epochs = 10  # "time of training loop" value
     for t in range(epochs):
         start_time = time.time()
-        print(f"Epoch {t + 1}\n-------------------------------")
+        print(f"Epoch {t + 1}\n———————————————————————————————")
         train_loop(train_dataloader, model, loss_fn, optimizer, device, epochs)
         #test_loop(test_dataloader, model, loss_fn, device, epochs)
         end_time = time.time()
-        print('Epoch End ————Train time in this epoch: ———— {:.2f}'.format((end_time - start_time)), 'seconds')
+        print("Epoch End ————Train time in this epoch: ———— {:.2f}".format((end_time - start_time)), 'seconds')
+        print("———————————————————————————————————————————————")
 
 
 main()
