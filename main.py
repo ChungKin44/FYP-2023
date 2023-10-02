@@ -1,5 +1,6 @@
 # Preprocess
 import os
+
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from torchvision.utils import save_image
 
@@ -14,6 +15,8 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
 from matplotlib.patches import Polygon
+
+lbl_size_tracker = []
 
 # 2. training and model
 import time
@@ -102,7 +105,7 @@ def display_mask(X, predict, y, batch):
     img = torch.stack([x, la, x_], 0)
     save_image(img.cpu(), os.path.join('./result_img/', f"{batch}.png"))
 
-    if batch == len(X) - 1:           # check the print only one time
+    if batch == len(X) - 1:  # check the print only one time
         print("Image save successfully!")
 
     return 0
@@ -124,17 +127,16 @@ def parse_xml(xml_path):
         ymax = int(bndbox.find('ymax').text)
         bounding_boxes.append([xmin, ymin, xmax, ymax])
         labels.append(name)
-        i = 0
+
         polygon = obj.find('polygon')
         po = []
         for point in polygon:
-            i += 1
+            count = 0
             if point.tag.startswith('x'):
                 x = float(point.text)
             elif point.tag.startswith('y'):
                 y = float(point.text)
                 po.append([x, y])
-
         polygons.append(po)
 
     size = root.find('size')
@@ -148,7 +150,6 @@ def polygon_to_mask(labels):
     labels = labels.tolist()
     current_label = None
     polygon_points = []
-
     fig, ax = plt.subplots(figsize=(6.4, 4.8))  # figsize =(3.2, 3.2) if image size = 320 * 320
     for point in labels:
         x, y, label = point
@@ -167,12 +168,14 @@ def polygon_to_mask(labels):
         polygon = Polygon(polygon_points, closed=True, alpha=0.5, facecolor=color)
         ax.add_patch(polygon)
     ax.set_facecolor('black')
-    ax.set_xlim(0, 320)  # Set x-axis limits
-    ax.set_ylim(0, 320)
+    ax.set_xlim(0, 640)  # Set x-axis limits
+    ax.set_ylim(0, 480)
     ax.set_xlabel('x')
     ax.set_ylabel('y')
     ax.set_title('Label Mask')
-    # plt.show()        # for show mask
+    ax.set_aspect('equal')
+    plt.gca().invert_yaxis()  # Invert Y-axis for correct visualization
+    # plt.show()  # for show mask
 
     fig.canvas.draw()
     image_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
@@ -242,9 +245,9 @@ class Read_voc(Dataset):
 
         la.append(lbls)
         result = torch.from_numpy(np.array(result))
-
+        # result = result[None, :]
         # print(result.size())  # check how many label of one images  e.g [239,3]
-
+        lbl_size_tracker.append(result.size(dim=0))
         return img, result
 
     def __len__(self):
@@ -252,6 +255,27 @@ class Read_voc(Dataset):
 
 
 import torch.nn.functional as F
+
+
+def pad_mask(size, mask):
+    result_list = []
+    # print(lbl_size_tracker)
+    for lbl_track in lbl_size_tracker:
+        temp = mask[:lbl_track]
+        temp_poly = single_mask_trans(temp)
+        result_list.append(temp_poly)
+
+    combined_tensor = torch.cat(result_list, dim=0)
+
+    return combined_tensor
+
+
+def single_mask_trans(mask):
+    mask = polygon_to_mask(mask)
+    mask = np.transpose(mask, (2, 0, 1))
+    mask = normalize(mask)
+    mask = mask[None, :]
+    return mask
 
 
 def save_model(ep, total_ep, loss, model):
@@ -285,16 +309,20 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
     for batch, (X, y) in enumerate(dataloader):
         # Data processing
         X = X.to(device)
-        y = polygon_to_mask(y)
 
-        y = np.transpose(y, (2, 0, 1))
-        y = normalize(y)
-        y = y[None, :]
+        if X.size(dim=0) > 1:
+            y = pad_mask(X.size(dim=0), y)
+            lbl_size_tracker.clear()
+        elif X.size(dim=0) == 1:
+            y = single_mask_trans(y)
+            lbl_size_tracker.clear()
+
         y = y.to(device)
 
         # Compute prediction and loss
         predict_x = model(X)
-        display_mask(X, predict_x, y, batch)     # for show image and mask
+        # display_mask(X, predict_x, y, batch)  # for show output image and mask
+
         loss = loss_fn(predict_x, y)
 
         # Backpropagation
@@ -309,23 +337,22 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
         true_mask = np.argmax(true_mask, axis=1)
         prediction_x = np.argmax(prediction_x, axis=1)
 
-        f1 = f1_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')    # all became 1D array
+        f1 = f1_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')  # all became 1D array
         iou = jaccard_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')  # for segmentation task
-        accuracy = accuracy_score(true_mask.reshape(-1), prediction_x.reshape(-1))     # for classification task
+        accuracy = accuracy_score(true_mask.reshape(-1), prediction_x.reshape(-1))  # for classification task
         f1_scores.append(f1)
         accuracies.append(accuracy)
 
-        print(f"loss: {loss:>6f}  F1 score: {f1:.4f}  Accuracy: {accuracy * 100:.2f}% IoU: {iou * 100:.4f}[{current:>5d}/{size:>5d}]")
+        print(
+            f"loss: {loss:>6f}  F1 score: {f1:.4f}  Accuracy: {accuracy * 100:.2f}% IoU: {iou * 100:.4f}[{current:>5d}/{size:>5d}]")
         # save_model(ep, epochs, loss, model)
-
 
         """## 读取模型
     model = net()
     state_dict = torch.load('model_name.pth') # https://blog.csdn.net/qq_41845478/article/details/116023691?ops_request_misc=&request_id=&biz_id=102&utm_term=save%20a%20model%20pytorch&utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-0-116023691.142^v94^chatsearchT3_1&spm=1018.2226.3001.4187
     model.load_state_dict(state_dict['model'])"""
 
-
-def test_loop(dataloader, model, loss_fn, device, epochs):
+    """def test_loop(dataloader, model, loss_fn, device, epochs):
     model.eval()
     size = len(dataloader.dataset)
     num_batches = len(dataloader)
@@ -358,7 +385,7 @@ def test_loop(dataloader, model, loss_fn, device, epochs):
         plt.title('Training Loss')
         plt.show()
     else:
-        ep += 1
+        ep += 1 """
 
 
 def main():
@@ -366,25 +393,22 @@ def main():
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
     device = check_cpu()  # checking the training module is using cpu/gpu?
     # display_image_with_polygon(train_data)                                        # Display image and label.
-    """img, label = train_data[0]
-    print(img.size())
-    print(label.size())
-    print(train_data.__len__())
-    display_image_with_boxes(img, res, label)"""
+
+    """display_image_with_boxes(img, res, label)"""
     """train_dataset, test_dataset = random_split(  # 70% for train set , 30% for test set
         dataset=train_data,
         lengths=[90, 60],
         generator=torch.Generator().manual_seed(0)
     )"""
     # Pytorch load Data
-    b_size = 1
-    train_dataloader = DataLoader(train_data, batch_size=b_size, shuffle=True, collate_fn=func)
-    #train_dataloader = DataLoader(train_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
-    #test_dataloader = DataLoader(test_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
+    batch_size = 4
+    train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=func)
+    # train_dataloader = DataLoader(train_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
+    # test_dataloader = DataLoader(test_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
 
-    """ count = 0
+    count = 5
     # Display image and label.
-    for index, data in enumerate(train_dataloader):
+    """for index, data in enumerate(train_dataloader):
         features, labels = data
         print(f"Feature batch shape: {features.size()}")
         print(f"Labels batch shape: {labels.size()}")
@@ -404,9 +428,9 @@ def main():
     epochs = 10  # "time of training loop" value
     for t in range(epochs):
         start_time = time.time()
-        print(f"Epoch {t + 1}\n———————————————————————————————")
+        print(f"Epoch {t + 1}\n———————————————————————————————Batch size: {batch_size}")
         train_loop(train_dataloader, model, loss_fn, optimizer, device, epochs)
-        #test_loop(test_dataloader, model, loss_fn, device, epochs)
+        # test_loop(test_dataloader, model, loss_fn, device, epochs)
         end_time = time.time()
         print("Epoch End ————Train time in this epoch: ———— {:.2f}".format((end_time - start_time)), 'seconds')
         print("———————————————————————————————————————————————")
