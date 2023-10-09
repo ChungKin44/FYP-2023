@@ -120,3 +120,11 @@ class UNet(nn.Module):  # __init__ part of Unet
         self.up3 = torch.utils.checkpoint(self.up3)
         self.up4 = torch.utils.checkpoint(self.up4)
         self.outc = torch.utils.checkpoint(self.outc)
+
+
+"""if __name__ == '__main__':  # for testing
+    a = torch.randn(2, 3, 320, 320)
+    print(a)
+    net = UNet(n_channels=3, n_classes=3)
+    print(net(a).shape)  # Output: torch.Size([1, 3, 320, 320])
+    print(net(a))"""

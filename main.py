@@ -1,6 +1,8 @@
 # Preprocess
 import os
 
+from torch.optim.lr_scheduler import ExponentialLR
+
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from torchvision.utils import save_image
 
@@ -109,6 +111,24 @@ def display_mask(X, predict, y, batch):
         print("Image save successfully!")
 
     return 0
+
+
+def plot_training_result(loss_values, iou_values, epochs):
+    current_ep = 1
+
+    while current_ep <= epochs:
+        if current_ep == epochs:
+            epochs_range = range(1, len(loss_values) + 1)
+            plt.plot(epochs_range, loss_values, color='blue', label='Loss')
+            plt.plot(epochs_range, iou_values, color='green', label='IoU')
+            plt.xlabel('Epoch')
+            plt.ylabel('Value')
+            plt.title('Training Result')
+            plt.legend()
+            plt.xticks(epochs_range)  # Set the x-axis tick locations to the epochs_range
+            plt.show()
+        else:
+            current_ep += 1
 
 
 def parse_xml(xml_path):
@@ -278,32 +298,39 @@ def single_mask_trans(mask):
     return mask
 
 
-def save_model(ep, total_ep, loss, model):
+def save_model(total_ep, loss, iou, model):
     folder = './model'
+    best_loss = float('inf')
+    best_iou = float('-inf')
 
-    if ep == total_ep:
-        # file looping
-        for filename in os.listdir(folder):
-            file_path = os.path.join(folder, filename)
+    # file looping
+    for filename in os.listdir(folder):
+        file_path = os.path.join(folder, filename)
+        # Check if there is file
+        if os.path.isfile(file_path):
+            # Extract the history loss and IoU of the 'model' folder
+            history_loss = float(filename.split("_")[2][:-3])
+            history_iou = float(filename.split("_")[3][:-3])
+            # Check if the history loss < best loss and history IoU > best IoU
+            if history_loss < best_loss and history_iou > best_iou:
+                best_loss = history_loss
+                best_iou = history_iou
 
-            # Check if there is file
-            if os.path.isfile(file_path):
-                # Extract the history loss of the 'model' folder
-                history_loss = float(filename.split("_")[2][:-3])
-                # Check if the average current loss > history loss
-                if loss > history_loss:
-                    # Specify the file path with proper formatting
-                    model_path = './model/model_{}_{}.pt'.format(ep, loss)
-                    # Save the model
-                    torch.save({'model': model.state_dict()}, model_path)
-                    print("model_copy is saved !")
+    # Obtained the best result of train records, check if the current loss < best loss and current IoU > best IoU
+    if loss < best_loss and iou > best_iou:
+        # Specify the file path with proper formatting
+        model_path = './model/model_{}_{}_{}.pt'.format(total_ep, loss, iou)
+        # Save the model
+        torch.save({'model': model.state_dict()}, model_path)
+        print("model is saved !")
+
 
 
 # Train Part
-def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
+def train_loop(dataloader, model, loss_fn, optimizer, device, epochs, current_ep):
     size = len(dataloader.dataset)
-    f1_scores = []
-    accuracies = []
+    loss_values = []
+    iou_values = []
     model.train()
 
     for batch, (X, y) in enumerate(dataloader):
@@ -340,17 +367,21 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
         f1 = f1_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')  # all became 1D array
         iou = jaccard_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')  # for segmentation task
         accuracy = accuracy_score(true_mask.reshape(-1), prediction_x.reshape(-1))  # for classification task
-        f1_scores.append(f1)
-        accuracies.append(accuracy)
+        loss_values.append(loss)
+        iou_values.append(iou)
 
         print(
-            f"loss: {loss:>6f}  F1 score: {f1:.4f}  Accuracy: {accuracy * 100:.2f}% IoU: {iou * 100:.4f}[{current:>5d}/{size:>5d}]")
-        # save_model(ep, epochs, loss, model)
+            f"loss: {loss:>6f}  F1 score: {f1:.4f}  "
+            f"Accuracy: {accuracy * 100:.2f}%  "
+            f"IoU: {iou * 100:.4f}%  "
+            f"[{current:>5d}/{size:>5d}]")
 
-        """## 读取模型
-    model = net()
-    state_dict = torch.load('model_name.pth') # https://blog.csdn.net/qq_41845478/article/details/116023691?ops_request_misc=&request_id=&biz_id=102&utm_term=save%20a%20model%20pytorch&utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-0-116023691.142^v94^chatsearchT3_1&spm=1018.2226.3001.4187
-    model.load_state_dict(state_dict['model'])"""
+        save_model(epochs, loss, iou, model)
+
+        if (batch + 1) % len(dataloader) == 0:
+            avg_loss = np.mean(loss)
+            print(f"\nAverage Loss of Epoch {current_ep}: {avg_loss:.6f}")
+            # plot_training_result(loss_values, iou_values, epochs)
 
     """def test_loop(dataloader, model, loss_fn, device, epochs):
     model.eval()
@@ -389,7 +420,7 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs):
 
 
 def main():
-    root_dir = "C:/Users/willi/PycharmProjects/modelling/Dataset/test/"
+    root_dir = "C:/Users/willi/PycharmProjects/modelling/Dataset/train/"
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
     device = check_cpu()  # checking the training module is using cpu/gpu?
     # display_image_with_polygon(train_data)                                        # Display image and label.
@@ -418,22 +449,26 @@ def main():
     # print(len(test_dataloader))
 
     # Model Configuration
-    CLASSES = ['stem', 'leaf', 'soil']
+    classes = ['leaf', 'stem']
 
-    model = unet.UNet(n_channels=3, n_classes=len(CLASSES))
+    model = unet.UNet(n_channels=3, n_classes=len(classes)+1)
     model = model.cuda()
     loss_fn = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=1e-5)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    scheduler = ExponentialLR(optimizer, gamma=0.9)
 
-    epochs = 10  # "time of training loop" value
+    epochs = 30  # "time of training loop" value
+    print(f" ***** Training Start ***** ")
     for t in range(epochs):
         start_time = time.time()
         print(f"Epoch {t + 1}\n———————————————————————————————Batch size: {batch_size}")
-        train_loop(train_dataloader, model, loss_fn, optimizer, device, epochs)
+        train_loop(train_dataloader, model, loss_fn, optimizer,device, epochs, t + 1)
+        scheduler.step()
         # test_loop(test_dataloader, model, loss_fn, device, epochs)
         end_time = time.time()
         print("Epoch End ————Train time in this epoch: ———— {:.2f}".format((end_time - start_time)), 'seconds')
         print("———————————————————————————————————————————————")
+    print(f" ***** Training End ***** ")
 
 
 main()

@@ -22,8 +22,9 @@ def write_folder_names_to_csv(folder_path, output_file):
 
     print(f"File names written to {output_file} and {output_text_file} successfully.")
 
+
 # change the file name here
-folder_path = "./Dataset/test/"
-output_file = "./Dataset/test/file_names.csv"
+folder_path = "./Dataset/train/"
+output_file = "./Dataset/train/file_names.csv"
 
 write_folder_names_to_csv(folder_path, output_file)
