@@ -1,7 +1,11 @@
+from math import sqrt
+
 import torch
 import torch.nn.functional as F
 from PIL import Image
 import torchvision.transforms as transforms
+
+import convexhull_grScan
 import unet as model
 
 import datetime
@@ -10,31 +14,31 @@ import datetime
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 
 # shape polygon
-from shapely.geometry import Polygon
-from shapely.ops import cascaded_union
+import convexhull_grScan as convexhull_gr
 
 Label_class = [[255, 255, 255], [0, 255, 0], [0, 0, 255]]  # others=white, leaf=green, stem=blue
+leaf = Label_class.index([0, 255, 0])
+stem = Label_class.index([0, 0, 255])
 
 
 class Predict:
-    @staticmethod
-    def predict_img(img_path):
-        model_path = "./model/model_30_1.452594518661499_0.29932511012332114.pt"
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    def __init__(self):
+        self.model_path = "./model/model_50_1.4136428833007812_0.41442098780585246.pt"
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.net = model.UNet(n_channels=3, n_classes=3).to(self.device)
+        self.colors = np.array(Label_class)
 
+    def predict_img(self, img_path):
         # Load the trained model
-        net = model.UNet(n_channels=3, n_classes=3)
-        state_dict = torch.load(model_path)
+        state_dict = torch.load(self.model_path)
 
         # Check if the state_dict is nested and access it
         if 'model' in state_dict:
             state_dict = state_dict['model']
 
-        net.load_state_dict(state_dict)
-        net = net.to(device)
+        self.net.load_state_dict(state_dict)
 
         # Load the image
         img = Image.open(img_path)
@@ -44,27 +48,25 @@ class Predict:
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
+        img = img.convert("RGB")   # make sure if it is RGB image
         img = transform(img)
         img = img.unsqueeze(0)
-        img = img.to(device)
+        img = img.to(self.device)
 
         # Set the model to evaluation mode
-        net.eval()
+        self.net.eval()
 
         # Forward pass
         with torch.no_grad():
-            output = net(img)
+            output = self.net(img)
             output = torch.sigmoid(output)
             output = output.data.cpu().numpy()
 
         # Convert probability to class
         mask = np.argmax(output, axis=1)  # convert to class mask
 
-        # Define the colors for each class (others=white, leaf=green, stem=blue)
-        colors = np.array(Label_class)
-
         # Convert the class mask to RGB
-        mask_rgb = colors[mask[0]]
+        mask_rgb = self.colors[mask[0]]
 
         # Convert the mask to a PIL Image and save it
         mask_img = Image.fromarray(mask_rgb.astype('uint8'))
@@ -76,15 +78,6 @@ class Predict:
         print("Image saved! \n")
 
         return mask[0]
-
-    @staticmethod
-    def calculate_coverage(mask, class_index):
-        # Calculate the coverage rate
-        leaf_pixels = np.count_nonzero(mask == class_index)
-        stem_pixels = np.count_nonzero(mask == class_index + 1)
-        coverage_rate = leaf_pixels / (leaf_pixels + stem_pixels)
-
-        return coverage_rate
 
     @staticmethod
     def result_bounding_box(img, mask, class_index):
@@ -140,62 +133,6 @@ class Predict:
         return filtered_data
 
     @staticmethod
-    def show_polygon(img, mask, leaf, bound_box):
-        contours, _ = cv2.findContours((mask == leaf).astype('uint8'), cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_NONE)
-        print(bound_box)
-        leafs_polygons = []
-        for contour in contours:
-            # Perform optional filtering based on contour area or other criteria if needed
-            # Approximate the contour with a polygon
-            epsilon = 0.01 * cv2.arcLength(contour, True)
-            polygon = cv2.approxPolyDP(contour, epsilon, True)
-            # Store the polygon for further processing if needed
-            leafs_polygons.append(polygon)
-
-        # Sort the polygons by area
-        leafs_polygons.sort(key=lambda x: cv2.contourArea(x), reverse=True)
-        print(len(leafs_polygons))
-        # Plot the n polygons on the image
-        filter_polygons = []
-        merged_polygon = []
-        for polygon in leafs_polygons:
-            if len(polygon) >= 4:
-                filter_polygons.append(polygon)
-            if len(polygon) == 1:
-                for coord in polygon:
-                    merged_polygon.append(coord)
-
-        leaf_set = Predict.overlap_polygon(bound_box, merged_polygon)
-        plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        for leaf in leaf_set:
-            leaf_points = np.array(leaf, dtype=np.int32)
-            cv2.polylines(img, [leaf_points], True, (255, 0, 0), 3)
-
-        cv2.imshow("window", img)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-    @staticmethod
-    def convert_white_blue_to_black(mask):
-        for i in range(mask.shape[0]):
-            for i in range(mask.shape[0]):
-                for j in range(mask.shape[1]):
-                    if mask[i, j] == 0 or mask[i, j] == 2:
-                        mask[i, j] = 0  # Set the pixel value to black (0)
-                    else:
-                        mask[i, j] = 255  # Set the pixel value to white (255, or any other value for white)
-
-                # Convert white pixels to green
-            mask[mask > 0] = 65280  # Set the pixel value to the green color representation (65280)
-
-            plt.imshow(mask, cmap='gray', vmin=0, vmax=255)
-            plt.axis('off')
-            plt.show()
-
-            return mask
-
-    @staticmethod
     def overlap_bb(bboxes):
         # Extract the coordinates from the bounding boxes
         x_coord_s = [box[0] for box in bboxes]
@@ -219,26 +156,146 @@ class Predict:
         return ol_bbox
 
 
-from PIL import Image
+class Contour(Predict):
+
+    def analyse_polygon(self, img, mask, leaf, bound_box):
+        contours, _ = cv2.findContours((mask == leaf).astype('uint8'), cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_NONE)
+
+        leafs_polygons = []
+        for contour in contours:
+            # Perform optional filtering based on contour area or other criteria if needed
+            # Approximate the contour with a polygon
+            epsilon = 0.01 * cv2.arcLength(contour, True)
+            polygon = cv2.approxPolyDP(contour, epsilon, True)
+            # Store the polygon for further processing if needed
+            leafs_polygons.append(polygon)
+
+        # Sort the polygons by area
+        leafs_polygons.sort(key=lambda x: cv2.contourArea(x), reverse=True)
+
+        # Plot the n polygons on the image
+        filter_polygons = []
+        merged_polygon = []
+        for polygon in leafs_polygons:
+            if len(polygon) >= 4:
+                filter_polygons.append(polygon)
+            if len(polygon) == 1:
+                for coord in polygon:
+                    merged_polygon.append(coord)
+
+        leaf_set = Predict.overlap_polygon(bound_box, merged_polygon)
+
+        return leaf_set
+
+    def calculate_radius(self, leaf_set):
+        max_radius = 0
+        for leaf in leaf_set:
+            x, y = leaf[0][0], leaf[0][1]
+            radius = np.sqrt(x ** 2 + y ** 2)
+            if radius > max_radius:
+                max_radius = radius
+        return max_radius
+
+    def show_contour(self, img, mask, leaf, bound_box):
+        leaf_set = self.analyse_polygon(img, mask, leaf, bound_box)
+        plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        radius = self.calculate_radius(leaf_set)
+        # print("Radius of the leaf set:", radius)
+
+        # Draw and line up all the pixels of the contour
+        # convex_hull = cv2.convexHull(np.array(leaf_set), returnPoints=True)
+        # Example usage:
+        # Approximate the convex hull with a more precise polygon
+        # epsilon = 0.01 * cv2.arcLength(convex_hull, True)
+        # polygon = cv2.approxPolyDP(convex_hull, epsilon, True)
+
+
+        # Convex Hull using Graham Scan for polygon
+        convex_hull_leaf = np.array(convexhull_grScan.ConvexHull().compute_convex_hull(leaf_set),
+                                    dtype=np.int32).reshape((-1, 1, 2))
+
+        # Draw convex hull
+        cv2.polylines(img, [convex_hull_leaf], True, (0, 255, 0), 2)
+        # Show the image
+        cv2.imshow("window", img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+        return convex_hull_leaf
+
+
+class Analyse_attribute(Predict):
+
+    def calculate_coverage(self, mask, class_index):
+        # Calculate the coverage rate
+        leaf_pixels = np.count_nonzero(mask == class_index)
+        stem_pixels = np.count_nonzero(mask == class_index + 1)
+        coverage_rate = leaf_pixels / (leaf_pixels + stem_pixels)
+        return coverage_rate
+
+    def polygon_area(self, leaf_polygon):  # its underline because the method was only call in the class
+        n = len(leaf_polygon)
+        area = 0
+        for i in range(n):
+            x1, y1 = leaf_polygon[i][0][0], leaf_polygon[i][0][1]
+            x2, y2 = leaf_polygon[(i + 1) % n][0][0], leaf_polygon[(i + 1) % n][0][1]
+            area += (x1 * y2 - x2 * y1)
+
+        return abs(area) / 2.0
+
+    def real_area(self, area):
+        # camera spec.
+        s_width = 3.59  # in mm unit
+        s_height = 2.684
+
+        # image spec.
+        im_width = 640  # in pixel unit
+        im_height = 480
+
+        # environment parameter
+        actual_distance = 20  # cm unit
+        focal_len = 0.36  # cm unit
+
+        pixel_width = (s_width / im_width)
+        pixel_height = (s_height / im_height)
+        sensor_area = (sqrt(area) * pixel_height) * (sqrt(area) * pixel_width)  # mm^2 unit
+        actual_area = sensor_area * actual_distance / focal_len  # cm^2 unit
+        return actual_area
+
+    def print_analyse(self, mask, label_0, leaf_polygon):
+        coverage_rate = self.calculate_coverage(mask, label_0)  # label_0 = leaf
+        area = self.polygon_area(leaf_polygon)
+        actual_area = self.real_area(area)
+
+        print("Result  ———————————————————————————————————————")
+        print(f'1. Coverage rate  : {coverage_rate * 100:.1f} %')
+        print(f'2. Current height : ')
+        print(f'3. Current actual area   : {actual_area:.2f} cm²')
+        # print(f'3. Current area ratio  : {area_ratio:.1f} of the photo')
+        print("———————————————————————————————————————————————")
 
 
 def main():
-    img_path = "./demo_image/WhatsApp Image 2023-10-11 at 12.23.16_131b91f1.jpg"
-    mask = Predict.predict_img(img_path)
-    leaf = Label_class.index([0, 255, 0])
-    coverage_rate = Predict.calculate_coverage(mask, leaf)
-    print("Result  ———————————————————————————————————————\n")
-    print(f'1. Coverage rate  : {coverage_rate * 100:.1f} %')
-    print(f'2. Current height : ')
-    print(f'3. Current area   : \n')
-    print("———————————————————————————————————————————————")
+    img_path = "./demo_image/vertical.jpg"
     img = cv2.imread(img_path)
-    bounding_box = Predict.result_bounding_box(img, mask, leaf)
-    bb = Predict.show_leaf_bb_result(img_path, bounding_box)
-    ol_bbox = Predict.overlap_bb(bb)
-    Predict.show_polygon(img, mask, leaf, ol_bbox)
-    # Call the function with the path to your image
-    # Predict.convert_white_blue_to_black(mask)
+
+    predictor = Predict()
+    analyser = Analyse_attribute()
+    contour = Contour()
+
+    mask = predictor.predict_img(img_path)
+
+    # Object detection class
+    bounding_box = predictor.result_bounding_box(img, mask, leaf)
+    bb = predictor.show_leaf_bb_result(img_path, bounding_box)
+
+    # Contour class
+    ol_bbox = predictor.overlap_bb(bb)
+    leaf_polygon = contour.show_contour(img, mask, leaf, ol_bbox)
+
+    # Final : analyse class
+    analyser.print_analyse(mask, leaf, leaf_polygon)
 
 
 main()
