@@ -1,7 +1,7 @@
 # Preprocess
 import os
 
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import ExponentialLR, StepLR
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from torchvision.utils import save_image
@@ -17,6 +17,9 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
 from matplotlib.patches import Polygon
+import matplotlib
+
+import matplotlib.pyplot as plt
 
 lbl_size_tracker = []
 
@@ -274,9 +277,6 @@ class Read_voc(Dataset):
         return len(self.img_idx)
 
 
-import torch.nn.functional as F
-
-
 def pad_mask(size, mask):
     result_list = []
     # print(lbl_size_tracker)
@@ -325,12 +325,12 @@ def save_model(total_ep, loss, iou, model):
         print("model is saved !")
 
 
-
 # Train Part
 def train_loop(dataloader, model, loss_fn, optimizer, device, epochs, current_ep):
     size = len(dataloader.dataset)
     loss_values = []
     iou_values = []
+    acc_values = []
     model.train()
 
     for batch, (X, y) in enumerate(dataloader):
@@ -369,6 +369,7 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs, current_ep
         accuracy = accuracy_score(true_mask.reshape(-1), prediction_x.reshape(-1))  # for classification task
         loss_values.append(loss)
         iou_values.append(iou)
+        acc_values.append(accuracy)
 
         print(
             f"loss: {loss:>6f}  F1 score: {f1:.4f}  "
@@ -383,40 +384,23 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs, current_ep
             print(f"\nAverage Loss of Epoch {current_ep}: {avg_loss:.6f}")
             # plot_training_result(loss_values, iou_values, epochs)
 
-    """def test_loop(dataloader, model, loss_fn, device, epochs):
-    model.eval()
-    size = len(dataloader.dataset)
-    num_batches = len(dataloader)
-    test_loss, correct = 0, 0
-    ep = 0
+    return loss_values,acc_values
 
-    with torch.no_grad():
-        for X, y in dataloader:
-            # Move data to the same device as the model
-            X = X.to(device)
-            y = polygon_to_mask(y)
-            y = np.transpose(y, (2, 0, 1))
-            y = normalize(y)
-            y = y[None, :]
-            y = y.to(device)
-            predict = model(X)
-            test_loss += loss_fn(predict, y).item()
-            correct += (predict.argmax(1) == y).type(torch.float).sum().item()
 
-    test_loss /= num_batches
-    correct /= size
+import math
 
-    # print(f"Test Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
-    print(f"Test Error: \n Avg loss: {test_loss:>8f} \n")
-    if ep == epochs:
-        plt.plot(test_loss)
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.ylim(0, 10)
-        plt.title('Training Loss')
-        plt.show()
-    else:
-        ep += 1 """
+
+def create_lambda_scheduler(optimizer, warm_up_iter, T_max, lr_max, lr_min):
+    def lambda_scheduler(cur_iter):
+        if cur_iter < warm_up_iter:
+            return cur_iter / warm_up_iter
+            print("Warm up Learning rate processing.")
+        else:
+            cos_val = torch.cos(torch.tensor((cur_iter - warm_up_iter) / (T_max - warm_up_iter) * math.pi))
+            return (lr_min + 0.5 * (lr_max - lr_min) * (1.0 + cos_val)) / lr_max  # learning rate result
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_scheduler)
+    return scheduler
 
 
 def main():
@@ -432,14 +416,14 @@ def main():
         generator=torch.Generator().manual_seed(0)
     )"""
     # Pytorch load Data
-    batch_size = 4
+    batch_size = 6
     train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=func)
     # train_dataloader = DataLoader(train_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
     # test_dataloader = DataLoader(test_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
 
-    count = 5
     # Display image and label.
-    """for index, data in enumerate(train_dataloader):
+    """ count = 5
+    for index, data in enumerate(train_dataloader):
         features, labels = data
         print(f"Feature batch shape: {features.size()}")
         print(f"Labels batch shape: {labels.size()}")
@@ -451,24 +435,52 @@ def main():
     # Model Configuration
     classes = ['leaf', 'stem']
 
-    model = unet.UNet(n_channels=3, n_classes=len(classes)+1)
+    model = unet.UNet(n_channels=3, n_classes=len(classes) + 1)
     model = model.cuda()
     loss_fn = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-    scheduler = ExponentialLR(optimizer, gamma=0.9)
-
-    epochs = 30  # "time of training loop" value
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.2, momentum=0.9, weight_decay=0.0005)
+    # scheduler = ExponentialLR(optimizer, gamma=0.9)                      #logistic scheduler
+    scheduler = create_lambda_scheduler(optimizer, warm_up_iter=2, T_max=20, lr_max=0.1, lr_min=1e-5)
+    # scheduler = StepLR(optimizer, step_size=3, gamma=0.1)  # decrease LR after each 3 epochs
+    cos_lr_list = []
+    epochs = 50  # "time of training loop" value
     print(f" ***** Training Start ***** ")
+    loss_total = []
+    acc_total = []
     for t in range(epochs):
         start_time = time.time()
         print(f"Epoch {t + 1}\n———————————————————————————————Batch size: {batch_size}")
-        train_loop(train_dataloader, model, loss_fn, optimizer,device, epochs, t + 1)
-        scheduler.step()
+        current_loss,current_acc = train_loop(train_dataloader, model, loss_fn, optimizer, device, epochs, t + 1)
+        print("The %d of epoch Learning rate：%f" % (t + 1, optimizer.param_groups[0]['lr']))
+        cos_lr_list.append(optimizer.param_groups[0]['lr'])
+        scheduler.step()  # for adjust the learning rate because if not it will fix lr.
         # test_loop(test_dataloader, model, loss_fn, device, epochs)
         end_time = time.time()
         print("Epoch End ————Train time in this epoch: ———— {:.2f}".format((end_time - start_time)), 'seconds')
         print("———————————————————————————————————————————————")
+        loss_total.extend(current_loss)
+        acc_total.extend(current_acc)
     print(f" ***** Training End ***** ")
+
+    import matplotlib.pyplot as plt
+
+    # Plot the loss_total
+    plt.figure()
+    plt.plot(range(1, epochs + 1), loss_total)
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss value')
+    plt.title('Training Loss')
+
+    # Plot the acc_total
+    plt.figure()
+    plt.plot(range(1, epochs + 1), acc_total)
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.title('Model Accuracy')
+
+    # Display both plots
+    plt.show()
+
 
 
 main()
