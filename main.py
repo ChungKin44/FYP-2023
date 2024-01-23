@@ -21,7 +21,7 @@ import matplotlib
 
 import matplotlib.pyplot as plt
 
-lbl_size_tracker = []
+matplotlib.use('AGG')
 
 # 2. training and model
 import time
@@ -32,8 +32,17 @@ from d2l import torch as d2l
 from tqdm import tqdm
 import pandas as pd
 
+lbl_size_tracker = []
+
 # 2.1 training parameter
 from sklearn.metrics import f1_score, accuracy_score, jaccard_score
+
+#2.2 Hyperparameter
+
+
+
+# 3. graph library
+import datetime
 
 
 def check_cpu():
@@ -174,39 +183,44 @@ def polygon_to_mask(labels):
     current_label = None
     polygon_points = []
     fig, ax = plt.subplots(figsize=(6.4, 4.8))  # figsize =(3.2, 3.2) if image size = 320 * 320
-    for point in labels:
-        x, y, label = point
+    try:
+        for point in labels:
+            x, y, label = point
 
-        if label != current_label:
-            if polygon_points:
-                polygon = Polygon(polygon_points, closed=True, alpha=0.5, facecolor=color)
-                ax.add_patch(polygon)
-            polygon_points = []
-            current_label = label
-            color = 'green' if label == 0 else 'red'
+            if label != current_label:
+                if polygon_points:
+                    polygon = Polygon(polygon_points, closed=True, alpha=0.5, facecolor=color)
+                    ax.add_patch(polygon)
+                polygon_points = []
+                current_label = label
+                color = 'green' if label == 0 else 'red'
 
-        polygon_points.append([x, y])
+            polygon_points.append([x, y])
 
-    if polygon_points:
-        polygon = Polygon(polygon_points, closed=True, alpha=0.5, facecolor=color)
-        ax.add_patch(polygon)
-    ax.set_facecolor('black')
-    ax.set_xlim(0, 640)  # Set x-axis limits
-    ax.set_ylim(0, 480)
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    ax.set_title('Label Mask')
-    ax.set_aspect('equal')
-    plt.gca().invert_yaxis()  # Invert Y-axis for correct visualization
-    # plt.show()  # for show mask
+        if polygon_points:
+            polygon = Polygon(polygon_points, closed=True, alpha=0.5, facecolor=color)
+            ax.add_patch(polygon)
+        ax.set_facecolor('black')
+        ax.set_xlim(0, 640)  # Set x-axis limits
+        ax.set_ylim(0, 480)
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_title('Label Mask')
+        ax.set_aspect('equal')
+        plt.gca().invert_yaxis()  # Invert Y-axis for correct visualization
 
-    fig.canvas.draw()
-    image_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    image_array = image_array.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    image_array = torch.from_numpy(image_array)
-    plt.close(fig)  # Close the figure to free up resources
+        fig.canvas.draw()
+        image_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        image_array = image_array.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        image_array = np.copy(image_array)
 
-    return image_array
+        # to tensor type
+        mask_tensor = torch.from_numpy(image_array)
+        return mask_tensor
+
+    finally:
+        plt.close(fig)  # Close the figure to free up resources
+        plt.close('all')  # Close all figures to free up resources
 
 
 def func(batch):
@@ -271,6 +285,9 @@ class Read_voc(Dataset):
         # result = result[None, :]
         # print(result.size())  # check how many label of one images  e.g [239,3]
         lbl_size_tracker.append(result.size(dim=0))
+        # print(result)
+        # rint("image size is : ", img.size())
+        # print("Quantity of label : ", result.size())
         return img, result
 
     def __len__(self):
@@ -298,42 +315,67 @@ def single_mask_trans(mask):
     return mask
 
 
-def save_model(total_ep, loss, iou, model):
-    folder = './model'
-    best_loss = float('inf')
+def save_model(total_ep, accuracy, iou, model):
+    folder = './harvest_result/model'
+    best_acc = float('-inf')
     best_iou = float('-inf')
-
     # file looping
     for filename in os.listdir(folder):
         file_path = os.path.join(folder, filename)
         # Check if there is file
         if os.path.isfile(file_path):
             # Extract the history loss and IoU of the 'model' folder
-            history_loss = float(filename.split("_")[2][:-3])
+            history_acc = float(filename.split("_")[2][:-3])
             history_iou = float(filename.split("_")[3][:-3])
             # Check if the history loss < best loss and history IoU > best IoU
-            if history_loss < best_loss and history_iou > best_iou:
-                best_loss = history_loss
+            if history_acc > accuracy and history_iou > best_iou:
+                best_acc = history_acc
                 best_iou = history_iou
-
-    # Obtained the best result of train records, check if the current loss < best loss and current IoU > best IoU
-    if loss < best_loss and iou > best_iou:
+    # print(best_acc)
+    # print(best_iou)
+    # print("Current :" , iou , accuracy)
+    # Obtained the best result of train records, check if the current acc > best acc and current IoU > best IoU
+    if accuracy > best_acc and iou > best_iou:
         # Specify the file path with proper formatting
-        model_path = './model/model_{}_{}_{}.pt'.format(total_ep, loss, iou)
+        model_path = './harvest_result/model/model_{}_{}_{}.pt'.format(total_ep, accuracy, iou)
         # Save the model
         torch.save({'model': model.state_dict()}, model_path)
-        print("model is saved !")
+        print("Trained model is saved !")
 
 
 # Train Part
+def dice_coefficient(y_true, y_pred, num_classes, smooth=1.):
+    dice_scores = []
+
+    for class_label in range(num_classes):
+        y_true_class = np.equal(y_true, class_label).astype(np.float32)
+        y_pred_class = np.equal(y_pred, class_label).astype(np.float32)
+
+        intersection = np.sum(y_true_class * y_pred_class)    # only the overlap part
+        union = np.sum(y_true_class) + np.sum(y_pred_class)   # all
+
+        dice = (2 * intersection + smooth) / (union + smooth)
+        dice_scores.append(dice)
+
+    average_dice = np.mean(dice_scores)
+
+    return average_dice
+
+
 def train_loop(dataloader, model, loss_fn, optimizer, device, epochs, current_ep):
     size = len(dataloader.dataset)
     loss_values = []
     iou_values = []
     acc_values = []
+    dice_values = []
+
+
     model.train()
 
     for batch, (X, y) in enumerate(dataloader):
+        # print("Image size : ", X.size())
+        # print("Label size : ", y.size())
+
         # Data processing
         X = X.to(device)
 
@@ -364,39 +406,43 @@ def train_loop(dataloader, model, loss_fn, optimizer, device, epochs, current_ep
         true_mask = np.argmax(true_mask, axis=1)
         prediction_x = np.argmax(prediction_x, axis=1)
 
-        f1 = f1_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')  # all became 1D array
+        # Note : the label and mask is shape from 2D to 1D
+        dice_value = dice_coefficient(true_mask.reshape(-1), prediction_x.reshape(-1), num_classes=3)  # all became 1D array
         iou = jaccard_score(true_mask.reshape(-1), prediction_x.reshape(-1), average='macro')  # for segmentation task
         accuracy = accuracy_score(true_mask.reshape(-1), prediction_x.reshape(-1))  # for classification task
+
         loss_values.append(loss)
         iou_values.append(iou)
         acc_values.append(accuracy)
+        dice_values.append(dice_value)
 
         print(
-            f"loss: {loss:>6f}  F1 score: {f1:.4f}  "
+            f"Loss: {loss:>6f}  F1 score/Dice Coefficient: {dice_value*100:.2f}%  "
             f"Accuracy: {accuracy * 100:.2f}%  "
-            f"IoU: {iou * 100:.4f}%  "
-            f"[{current:>5d}/{size:>5d}]")
+            f"IoU: {iou * 100:.2f}%  "
+            f" [{current:>5d}/{size:>5d}]"
+        )
 
-        save_model(epochs, loss, iou, model)
+        save_model(epochs, accuracy, iou, model)
 
         if (batch + 1) % len(dataloader) == 0:
             avg_loss = np.mean(loss)
             print(f"\nAverage Loss of Epoch {current_ep}: {avg_loss:.6f}")
             # plot_training_result(loss_values, iou_values, epochs)
 
-    return loss_values,acc_values
+    return loss_values, acc_values
 
 
 import math
 
 
-def create_lambda_scheduler(optimizer, warm_up_iter, T_max, lr_max, lr_min):
+def create_lambda_scheduler(optimizer, warm_up_epochs, total_epochs, lr_max, lr_min):
     def lambda_scheduler(cur_iter):
-        if cur_iter < warm_up_iter:
-            return cur_iter / warm_up_iter
+        if cur_iter < warm_up_epochs:
             print("Warm up Learning rate processing.")
+            return cur_iter / warm_up_epochs
         else:
-            cos_val = torch.cos(torch.tensor((cur_iter - warm_up_iter) / (T_max - warm_up_iter) * math.pi))
+            cos_val = torch.cos(torch.tensor((cur_iter - warm_up_epochs) / (total_epochs - warm_up_epochs) * math.pi))
             return (lr_min + 0.5 * (lr_max - lr_min) * (1.0 + cos_val)) / lr_max  # learning rate result
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_scheduler)
@@ -404,7 +450,8 @@ def create_lambda_scheduler(optimizer, warm_up_iter, T_max, lr_max, lr_min):
 
 
 def main():
-    root_dir = "C:/Users/willi/PycharmProjects/modelling/Dataset/train/"
+    # Select the train set
+    root_dir = "C:/Users/willi/PycharmProjects/modelling/Dataset/debug/"
     train_data = Read_voc(root_path=root_dir)  # DataSet Preprocessing
     device = check_cpu()  # checking the training module is using cpu/gpu?
     # display_image_with_polygon(train_data)                                        # Display image and label.
@@ -416,7 +463,7 @@ def main():
         generator=torch.Generator().manual_seed(0)
     )"""
     # Pytorch load Data
-    batch_size = 6
+    batch_size = 1
     train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=func)
     # train_dataloader = DataLoader(train_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
     # test_dataloader = DataLoader(test_dataset, batch_size=b_size, shuffle=True, collate_fn=func)
@@ -435,52 +482,59 @@ def main():
     # Model Configuration
     classes = ['leaf', 'stem']
 
-    model = unet.UNet(n_channels=3, n_classes=len(classes) + 1)
+    model = unet.UNet(n_channels=3, num_class=len(classes) + 1)
     model = model.cuda()
     loss_fn = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.2, momentum=0.9, weight_decay=0.0005)
     # scheduler = ExponentialLR(optimizer, gamma=0.9)                      #logistic scheduler
-    scheduler = create_lambda_scheduler(optimizer, warm_up_iter=2, T_max=20, lr_max=0.1, lr_min=1e-5)
+
+    scheduler = create_lambda_scheduler(optimizer, warm_up_epochs=2, total_epochs=10, lr_max=0.1, lr_min=1e-5)
+    # cosine scheduler : warm up times , training times max
+
     # scheduler = StepLR(optimizer, step_size=3, gamma=0.1)  # decrease LR after each 3 epochs
     cos_lr_list = []
-    epochs = 50  # "time of training loop" value
+    epochs = 5  # "time of training loop" value
     print(f" ***** Training Start ***** ")
     loss_total = []
     acc_total = []
     for t in range(epochs):
         start_time = time.time()
         print(f"Epoch {t + 1}\n———————————————————————————————Batch size: {batch_size}")
-        current_loss,current_acc = train_loop(train_dataloader, model, loss_fn, optimizer, device, epochs, t + 1)
+        current_loss, current_acc = train_loop(train_dataloader, model, loss_fn, optimizer, device, epochs, t + 1)
         print("The %d of epoch Learning rate：%f" % (t + 1, optimizer.param_groups[0]['lr']))
         cos_lr_list.append(optimizer.param_groups[0]['lr'])
         scheduler.step()  # for adjust the learning rate because if not it will fix lr.
+
         # test_loop(test_dataloader, model, loss_fn, device, epochs)
         end_time = time.time()
-        print("Epoch End ————Train time in this epoch: ———— {:.2f}".format((end_time - start_time)), 'seconds')
+        elapsed_time = end_time - start_time
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
+        print("Epoch End ———— Train time in this epoch: ———— {:d} minutes {:.2f} seconds".format(minutes, seconds))
         print("———————————————————————————————————————————————")
+
         loss_total.extend(current_loss)
         acc_total.extend(current_acc)
     print(f" ***** Training End ***** ")
 
-    import matplotlib.pyplot as plt
+    save_plots(loss_total, acc_total)
 
-    # Plot the loss_total
+
+def save_plots(loss_total, acc_total):
+    # Get current date
+    now = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    # Plot loss
     plt.figure()
-    plt.plot(range(1, epochs + 1), loss_total)
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss value')
-    plt.title('Training Loss')
+    plt.plot(loss_total)
+    loss_file = f'./{now}_loss_value.png'
+    plt.savefig(loss_file)
 
-    # Plot the acc_total
+    # Plot accuracy
     plt.figure()
-    plt.plot(range(1, epochs + 1), acc_total)
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.title('Model Accuracy')
-
-    # Display both plots
-    plt.show()
-
+    plt.plot(acc_total)
+    acc_file = f'./{now}_accuracy.png'
+    plt.savefig(acc_file)
 
 
 main()
