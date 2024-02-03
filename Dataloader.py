@@ -1,0 +1,194 @@
+from tqdm import tqdm
+from PIL import Image
+import xml.etree.ElementTree as ET
+
+from matplotlib.patches import Polygon
+
+# Train Part
+import os
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+import tensorflow as tf
+
+tf.compat.v1.disable_eager_execution()
+
+
+
+def convert_label(lab):
+    result = []
+    for str in lab:
+        if str == 'leaf':
+            result.append(0)
+        elif str == 'stem':
+            result.append(1)
+        elif str == 'soil':
+            result.append(2)
+    return result
+
+
+def parse_xml(xml_path):
+    # print(xml_path)
+    results = []
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    bounding_boxes = []
+    labels = []
+    polygons = []
+
+    for obj in root.findall('object'):
+        name = obj.find('name').text
+        labels.append(name)
+        polygon = obj.find('polygon')
+        po = []
+        for point in polygon:
+            count = 0
+            if point.tag.startswith('x'):
+                x = float(point.text)
+            elif point.tag.startswith('y'):
+                y = float(point.text)
+                po.append([x, y])
+        polygons.append(po)
+
+    return labels, polygons
+
+
+import matplotlib.patches as patches
+
+
+def polygon_to_mask(labels):
+    try:
+        # Create a black background
+        img = np.zeros((480, 640, 3), dtype=np.uint8)  # initial step for making mask images
+
+        fig, ax = plt.subplots(figsize=(6.4, 4.8))
+
+        for polygon_info in labels:
+            polygon_num, polygon_coords, label = polygon_info
+
+            # Convert to integer coordinates
+            polygon_coords = [[int(x), int(y)] for x, y in polygon_coords]
+
+            if label == 0:
+                face_color = [0, 1., 0]  # Green  onehot encode with label classes
+            elif label == 1:
+                face_color = [0, 0, 1.]  # Blue
+            else:
+                face_color = [1., 0, 0]  # Red  others
+
+            # Fill the polygon with its color in the image
+            cv2.fillPoly(img, [np.array(polygon_coords)], color=face_color)
+        mask_array = np.array(img)
+        # Check for pixels with color [0, 0, 0]
+        black_pixels = (mask_array == [0, 0, 0]).all(axis=-1)
+
+        # Change the color of the black pixels to [1., 0, 0]
+        mask_array[black_pixels] = [1., 0, 0]
+
+        # mask_array = cv2.cvtColor(mask_array, cv2.COLOR_RGB2GRAY)
+
+        # # Display the image
+        # plt.imshow(mask_array)
+        # plt.axis('off')
+        # plt.show()
+
+        # Print the count of blue, green, and black pixels
+        # blue_pixels = np.sum(np.all(mask_array == [0, 0, 255], axis=-1))
+        # green_pixels = np.sum(np.all(mask_array == [0, 255, 0], axis=-1))
+        # black_pixels = np.sum(np.all(mask_array == [0, 0, 0], axis=-1))
+        # print("Blue Pixels:", blue_pixels)
+        # print("Green Pixels:", green_pixels)
+        # print("Black Pixels:", black_pixels)
+        return mask_array
+    except Exception as e:
+        print(e)
+    finally:
+        plt.close(fig)  # Close the figure to free up resources
+        plt.close('all')  # Close all figures to free up resources" edit in this code ```
+
+
+def gerAddress(root_path):
+    img_idx = []
+    anno_idx = []
+    img_path = root_path
+    anno_path = root_path
+    train_txt_path = root_path + "/file_names.txt"
+    train_txt = open(train_txt_path)
+    lines = train_txt.readlines()
+    for line in lines:
+        name = line.strip().split()[0]
+        name = name.rstrip('.jpg')
+        img_idx.append(img_path + name + '.jpg')
+        anno_idx.append(anno_path + name + '.xml')
+    return img_idx, anno_idx
+
+
+def single_mask_trans(mask):
+    mask = polygon_to_mask(mask)
+    return mask
+
+
+def LoadData(img_idx, anno_idx, frameObj=None):
+    if frameObj is None:
+        frameObj = {}  # Initialize frameObj as a dictionary
+
+    frameObj['img'] = []
+    frameObj['mask'] = []
+
+    for i in tqdm(range(len(img_idx))):
+        try:
+            result = []
+            res = []
+            img = Image.open(img_idx[i])
+            img = tf.keras.utils.img_to_array(img)
+            labels, polygons = parse_xml(anno_idx[i])
+            lbls = convert_label(labels)
+
+            res.append(polygons)
+            res.append(lbls)
+
+            j = 0
+            for polygons, label in zip(*res):
+                polygons_with_label = [j + 1, [[int(x), int(y)] for x, y in polygons], int(label)]
+                result.append(polygons_with_label)
+                j += 1
+
+            mask = single_mask_trans(result)
+
+            # Change to numpy data type
+            img = np.array(img)
+            mask = np.array(mask)
+            mask = np.reshape(mask, (480, 640, 3))
+            frameObj['img'].append(img)  # shape of [480,640,3] 3D
+            frameObj['mask'].append(mask)  # shape of [480,640,3] 2D
+
+            res.clear()
+            result.clear()
+
+
+        except Exception as e:
+            print(f"Error processing image {i} : {img_idx[i]}: {e}")
+            continue
+
+    return frameObj
+
+# root_path = r'../Dataset/test/'
+# img_idx, anno_idx = gerAddress(root_path)
+# frameObjTrain = LoadData(img_idx=img_idx, anno_idx=anno_idx)
+# # Print the length of the 'img' list in frameObj
+# print("Length of 'img' list:", len(frameObjTrain['img']))
+#
+# # Print the length of the 'mask' list in frameObj
+# print("Length of 'mask' list:", len(frameObjTrain['mask']))
+#
+# img_shapes = [img.shape for img in frameObjTrain['img']]
+# mask_shapes = [mask.shape for mask in frameObjTrain['mask']]
+#
+# # Print the shapes of images
+# print("Shapes of 'img' images:", img_shapes)
+#
+# # Print the shapes of masks
+# print("Shapes of 'mask' images:", mask_shapes)
