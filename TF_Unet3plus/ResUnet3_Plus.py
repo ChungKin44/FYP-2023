@@ -175,9 +175,9 @@ class ResUnet3_Plus:
         output5 = tf.keras.layers.Conv2DTranspose(3, (3, 3), strides=(16, 16), padding='same')(output5)
         output5 = tf.multiply(output5, sort_layer)
 
-        tmp = [output2, output3, output4, output5, output1]    # output1 is the final result
+        tmp = [output2, output3, output4, output5, output1]  # output1 is the final result = act. 24
         outputs = []
-        for item in tmp:
+        for index, item in enumerate(tmp):
             outputs.append(Activation('softmax')(item))
         model = tf.keras.Model(inputs=[inputImage], outputs=outputs)
         return model
