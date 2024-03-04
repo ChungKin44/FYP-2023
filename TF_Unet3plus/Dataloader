@@ -82,11 +82,10 @@ def polygon_to_mask(labels):
             # Fill the polygon with its color in the image
             cv2.fillPoly(img, [np.array(polygon_coords)], color=face_color)
         mask_array = np.array(img)
-        # Check for pixels with color [0, 0, 0]
-        black_pixels = (mask_array == [0, 0, 0]).all(axis=-1)
-
-        # Change the color of the black pixels to [1., 0, 0]
-        mask_array[black_pixels] = [1., 0, 0]
+        # Fill other pixels in black.
+        non_green_pixels = np.logical_not((mask_array == [0., 1., 0.]).all(axis=-1))
+        non_red_pixels = np.logical_not((mask_array == [0., 0., 1.]).all(axis=-1))
+        mask_array[non_green_pixels & non_red_pixels] = [0., 0., 0.]
 
         # mask_array = cv2.cvtColor(mask_array, cv2.COLOR_RGB2GRAY)
 
