@@ -6,7 +6,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 
 import convexhull_grScan
-import unet as model
+import Unet as model
 
 import datetime
 
@@ -25,7 +25,7 @@ stem = Label_class.index([0, 0, 255])
 
 class Predict:
     def __init__(self):
-        self.model_path = "./model/model_50_1.4136428833007812_0.41442098780585246.pt"
+        self.model_path = "./model/well_performance/model_10_0.8625010850694445_0.5217529723043653.pt"
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.net = model.UNet(n_channels=3, n_classes=3).to(self.device)
         self.colors = np.array(Label_class)
@@ -277,7 +277,7 @@ class Analyse_attribute(Predict):
 
 
 def main():
-    img_path = "./demo_image/vertical.jpg"
+    img_path = "./demo_image/single_image/vertical.jpg"
     img = cv2.imread(img_path)
 
     predictor = Predict()
